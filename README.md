@@ -55,6 +55,19 @@ con el comando de la CLI:
 mediateca dashboard --host 127.0.0.1 --port 8080
 ```
 
+La misma aplicacion expone la API de observabilidad de solo lectura:
+
+```bash
+curl http://localhost:8080/api/ingest/status
+curl http://localhost:8080/api/ingest/coverage
+```
+
+Tambien se puede consultar desde la CLI:
+
+```bash
+docker compose run --rm worker mediateca ingest-status
+```
+
 Variables de configuracion:
 
 - `MEDIATECA_DASHBOARD_HOST` y `MEDIATECA_DASHBOARD_PORT`: host y puerto de escucha.

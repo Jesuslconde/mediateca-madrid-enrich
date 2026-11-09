@@ -17,7 +17,10 @@ from mediateca.catalog.indexer import MeiliIndexer
 from mediateca.catalog.jobs import (
     DEFAULT_HANDLERS,
     coverage,
+    ingest_metrics,
+    recent_jobs,
     run_worker,
+    worker_state,
     worker_tick,
 )
 from mediateca.catalog.parser import parse_file
@@ -189,6 +192,66 @@ def status_command(
     coverage_table.add_row("Trabajos completados", str(cover.trabajos_completados))
     coverage_table.add_row("Trabajos fallidos", str(cover.trabajos_fallidos))
     console.print(coverage_table)
+
+
+@app.command("ingest-status")
+def ingest_status_command(
+    limit: int = typer.Option(20, "--limit", min=1, help="Trabajos a mostrar"),
+) -> None:
+    """Muestra trabajos, cobertura, metricas y salud del worker."""
+    with session_scope() as session:
+        jobs = recent_jobs(session, limit)
+        cover = coverage(session)
+        metrics = ingest_metrics(session, cover)
+        worker = worker_state(session)
+
+    jobs_table = Table(title="Trabajos de ingesta")
+    for column in ("ID", "Tipo", "Estado", "Cursor", "Intentos", "Inicio", "Fin"):
+        jobs_table.add_column(column)
+    for job in jobs:
+        cursor = f"{job.cursor_doc or '—'}/{job.cursor_titn or '—'}"
+        started = job.started_at.strftime("%Y-%m-%d %H:%M") if job.started_at else "—"
+        finished = job.finished_at.strftime("%Y-%m-%d %H:%M") if job.finished_at else "—"
+        jobs_table.add_row(
+            str(job.id),
+            job.job_type,
+            job.status,
+            cursor,
+            f"{job.attempts}/{job.max_attempts}",
+            started,
+            finished,
+        )
+    console.print(jobs_table)
+
+    summary = Table(title="Cobertura y metricas de ingesta")
+    summary.add_column("Metrica")
+    summary.add_column("Valor", justify="right")
+    summary.add_row("Ediciones", str(cover.ediciones))
+    summary.add_row("Descubiertas", str(cover.descubiertas))
+    summary.add_row("Enriquecidas", str(cover.enriquecidas))
+    summary.add_row("Pendientes", str(cover.pendientes))
+    summary.add_row("Fallidas", str(metrics.failed))
+    summary.add_row("Desaparecidas", str(cover.fallidas))
+    summary.add_row(
+        "Porcentaje enriquecido",
+        f"{round(cover.enriquecidas * 100 / cover.ediciones) if cover.ediciones else 0}%",
+    )
+    summary.add_row("Procesadas", str(metrics.processed))
+    summary.add_row("Errores", str(metrics.errors))
+    summary.add_row("Captchas", str(metrics.captchas))
+    summary.add_row("Renovaciones de sesion", str(metrics.session_renewals))
+    summary.add_row(
+        "Tiempo medio por ficha",
+        f"{metrics.average_ms:.2f} ms" if metrics.average_ms is not None else "—",
+    )
+    summary.add_row("Worker", worker.status)
+    summary.add_row(
+        "Ultimo heartbeat",
+        worker.last_heartbeat.strftime("%Y-%m-%d %H:%M:%S")
+        if worker.last_heartbeat
+        else "—",
+    )
+    console.print(summary)
 
 
 @app.command("worker")

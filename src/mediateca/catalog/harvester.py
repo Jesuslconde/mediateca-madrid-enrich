@@ -86,6 +86,8 @@ class OpacClient:
             },
         )
         self.session_id: str | None = None
+        self.captchas = 0
+        self.session_renewals = 0
 
     def close(self) -> None:
         self.client.close()
@@ -113,6 +115,8 @@ class OpacClient:
         return None
 
     def open_session(self) -> str:
+        if self.session_id is not None:
+            self.session_renewals += 1
         response = self.client.get(self.opac_url, params={"ACC": 101})
         response.raise_for_status()
         session_id = self._extract_session(response)
@@ -141,6 +145,7 @@ class OpacClient:
     def _check_response(self, response: httpx.Response) -> None:
         text = response.text
         if "No soy un robot" in text or "chequeado 'No soy un robot'" in text:
+            self.captchas += 1
             raise CaptchaRequired(
                 "El OPAC ha solicitado un reCAPTCHA; se detiene la recoleccion"
             )
@@ -327,6 +332,12 @@ class Harvester:
         self.session.commit()
         return edicion
 
+    def _opac_metrics(self) -> dict[str, int]:
+        return {
+            "captchas": int(getattr(self.client, "captchas", 0)),
+            "session_renewals": int(getattr(self.client, "session_renewals", 0)),
+        }
+
     def harvest_query(
         self,
         query: str,
@@ -367,9 +378,15 @@ class Harvester:
                     break
                 page = self.client.fetch_search_page(page.next_url, query)
 
+            stats = {
+                "processed": processed,
+                "errors": errors,
+                "pages": pages,
+                **self._opac_metrics(),
+            }
             run.status = "finished"
-            run.stats = {"processed": processed, "errors": errors, "pages": pages}
-            return {"processed": processed, "errors": errors, "pages": pages}
+            run.stats = stats
+            return stats
         except Exception as exc:  # noqa: BLE001
             run.status = "failed"
             run.error = str(exc)
@@ -443,6 +460,7 @@ class Harvester:
                 self.session, limit=limit, after_titn=cursor_titn
             )
             for titn in pending:
+                started = time.monotonic()
                 try:
                     self._enrich_titn(titn, delay=delay)
                 except CaptchaRequired:
@@ -450,11 +468,34 @@ class Harvester:
                 except Exception as exc:  # noqa: BLE001
                     errors += 1
                     failed.append(titn)
-                    logger.exception("Ficha %s fallida tras reintentos: %s", titn, exc)
+                    logger.exception(
+                        "Ficha fallida tras reintentos",
+                        extra={
+                            "job_id": job.id,
+                            "job_type": job.job_type,
+                            "titn": titn,
+                            "result": "failed",
+                            "duration_ms": round(
+                                (time.monotonic() - started) * 1000, 2
+                            ),
+                            "error": str(exc),
+                        },
+                    )
                 else:
                     processed += 1
                     processed_titns.append(titn)
-                    logger.info("Ficha %s enriquecida", titn)
+                    logger.info(
+                        "Ficha enriquecida",
+                        extra={
+                            "job_id": job.id,
+                            "job_type": job.job_type,
+                            "titn": titn,
+                            "result": "enriched",
+                            "duration_ms": round(
+                                (time.monotonic() - started) * 1000, 2
+                            ),
+                        },
+                    )
 
                 last_titn = titn
                 self.session.commit()
@@ -467,6 +508,7 @@ class Harvester:
                         "processed": processed,
                         "errors": errors,
                         "failed": failed,
+                        **self._opac_metrics(),
                     },
                 )
                 self.session.commit()
@@ -479,6 +521,7 @@ class Harvester:
                 "failed": failed,
                 "cursor_titn": last_titn,
                 "processed_titns": processed_titns,
+                **self._opac_metrics(),
             }
             run.status = "finished"
             run.stats = stats
@@ -555,12 +598,26 @@ class Harvester:
                     if limit is not None and processed >= limit:
                         limit_reached = True
                         break
+                    started = time.monotonic()
                     try:
                         with self.session.begin_nested():
                             upsert_stub(self.session, parsed)
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
-                        logger.exception("Error creando stub %s: %s", parsed.titn, exc)
+                        logger.exception(
+                            "Error creando stub",
+                            extra={
+                                "job_id": job.id,
+                                "job_type": job.job_type,
+                                "titn": parsed.titn,
+                                "doc": parsed.doc,
+                                "result": "failed",
+                                "duration_ms": round(
+                                    (time.monotonic() - started) * 1000, 2
+                                ),
+                                "error": str(exc),
+                            },
+                        )
                         continue
 
                     processed += 1
@@ -568,6 +625,19 @@ class Harvester:
                     last_titn = parsed.titn
                     if parsed.doc is not None:
                         last_doc = parsed.doc
+                    logger.info(
+                        "Stub creado",
+                        extra={
+                            "job_id": job.id,
+                            "job_type": job.job_type,
+                            "titn": parsed.titn,
+                            "doc": parsed.doc,
+                            "result": "stub",
+                            "duration_ms": round(
+                                (time.monotonic() - started) * 1000, 2
+                            ),
+                        },
+                    )
 
                 pages += 1
                 self.session.commit()
@@ -576,7 +646,12 @@ class Harvester:
                     job,
                     cursor_doc=last_doc,
                     cursor_titn=last_titn,
-                    stats={"processed": processed, "pages": pages, "errors": errors},
+                    stats={
+                        "processed": processed,
+                        "pages": pages,
+                        "errors": errors,
+                        **self._opac_metrics(),
+                    },
                 )
                 self.session.commit()
                 time.sleep(delay)
@@ -594,6 +669,7 @@ class Harvester:
                 "errors": errors,
                 "missing": missing,
                 "processed_titns": sorted(seen),
+                **self._opac_metrics(),
             }
             run.status = "finished"
             run.stats = stats

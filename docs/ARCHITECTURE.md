@@ -96,6 +96,24 @@ de continuar con el siguiente lote. La reindexacion completa con
 `index_editions(reset=True)` queda reservada al comando manual
 `mediateca index --reset`, para cambios de esquema o reparaciones.
 
+## Observabilidad de la ingesta
+
+El dashboard sirve tambien la API de observabilidad, siempre de solo lectura:
+
+- `GET /api/ingest/status`: trabajos recientes, cobertura, metricas y salud del worker.
+- `GET /api/ingest/coverage`: cobertura, metricas y salud del worker.
+
+La cobertura incluye ediciones descubiertas, enriquecidas, pendientes, fallidas y
+desaparecidas, ademas del porcentaje de enriquecimiento. Las metricas agregan
+fichas procesadas, errores, captchas, renovaciones de sesion y tiempo medio por
+ficha a partir de `harvest_jobs.stats`. El estado del worker usa el fichero de
+heartbeat y, como respaldo, el `heartbeat_at` de la base de datos; se marca
+`degraded` tras 120 segundos sin senal.
+
+La CLI ofrece el mismo resumen con `mediateca ingest-status`. Los jobs de ingesta
+escriben logs JSON con `job_id`, `job_type`, `titn`, `doc`, `result`,
+`duration_ms` y `error`; no se registran datos personales.
+
 ## Ejecucion
 
 - `mediateca discover --max-pages N --limit M`: ejecuta el descubrimiento y crea
@@ -106,5 +124,7 @@ de continuar con el siguiente lote. La reindexacion completa con
   procesado; el worker indexa automaticamente al terminar cada trabajo.
 - `mediateca index --reset`: reconstruye el indice completo, solo para cambios de
   esquema o reparaciones.
+- `mediateca ingest-status`: muestra trabajos, cobertura, metricas y salud del
+  worker.
 - El worker procesa los trabajos `discover` y `enrich` de `harvest_jobs` con el
   mismo checkpoint y reanudacion.

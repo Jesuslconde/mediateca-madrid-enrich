@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from mediateca.api.routers.ingest import router as ingest_router
 from mediateca.core.config import settings
 from mediateca.core.db import get_session_factory
 from mediateca.core.logging import get_logger
@@ -60,9 +61,9 @@ def _dashboard_context(session: Session) -> dict[str, Any]:
 
 app = FastAPI(
     title="Mediateca Madrid - Estado de la ingesta",
-    docs_url=None,
-    redoc_url=None,
+    description="Vista de estado y API de observabilidad de la ingesta.",
 )
+app.include_router(ingest_router, prefix="/api")
 
 
 @app.get("/", response_class=HTMLResponse)

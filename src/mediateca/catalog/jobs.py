@@ -18,6 +18,11 @@ from mediateca_shared.models import Edicion, HarvestJob
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from mediateca.core.config import settings
+from mediateca.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass(slots=True)
 class IngestCoverage:
@@ -30,6 +35,24 @@ class IngestCoverage:
     trabajos_en_ejecucion: int
     trabajos_completados: int
     trabajos_fallidos: int
+
+
+@dataclass(slots=True)
+class IngestMetrics:
+    processed: int
+    errors: int
+    captchas: int
+    session_renewals: int
+    failed: int
+    pending: int
+    average_ms: float | None
+
+
+@dataclass(slots=True)
+class WorkerState:
+    status: str
+    last_heartbeat: datetime | None
+    source: str | None
 
 
 def _now() -> datetime:
@@ -244,6 +267,97 @@ def coverage(session: Session) -> IngestCoverage:
     )
 
 
+def recent_jobs(session: Session, limit: int = 20) -> list[HarvestJob]:
+    stmt = (
+        select(HarvestJob)
+        .order_by(HarvestJob.created_at.desc(), HarvestJob.id.desc())
+        .limit(limit)
+    )
+    return list(session.scalars(stmt))
+
+
+def ingest_metrics(
+    session: Session, cover: IngestCoverage | None = None
+) -> IngestMetrics:
+    cover = cover or coverage(session)
+    processed = errors = captchas = session_renewals = failed = 0
+    total_ms = 0.0
+    timed_processed = 0
+
+    for job in session.scalars(select(HarvestJob)):
+        stats = job.stats or {}
+        job_processed = int(stats.get("processed", 0) or 0)
+        processed += job_processed
+        errors += int(stats.get("errors", 0) or 0)
+        captchas += int(stats.get("captchas", 0) or 0)
+        session_renewals += int(stats.get("session_renewals", 0) or 0)
+        failed += len(stats.get("failed") or [])
+        if job_processed > 0 and job.started_at and job.finished_at:
+            try:
+                elapsed = (job.finished_at - job.started_at).total_seconds() * 1000
+            except TypeError:
+                continue
+            total_ms += elapsed
+            timed_processed += job_processed
+
+    return IngestMetrics(
+        processed=processed,
+        errors=errors,
+        captchas=captchas,
+        session_renewals=session_renewals,
+        failed=failed,
+        pending=cover.pendientes,
+        average_ms=round(total_ms / timed_processed, 2) if timed_processed else None,
+    )
+
+
+def worker_state(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    heartbeat_file: Path | None = None,
+    stale_seconds: int | None = None,
+) -> WorkerState:
+    path = heartbeat_file if heartbeat_file is not None else settings.worker_heartbeat_file
+    stale = (
+        stale_seconds
+        if stale_seconds is not None
+        else settings.dashboard_worker_stale_seconds
+    )
+    current = now or _now()
+
+    last_heartbeat: datetime | None = None
+    source: str | None = None
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        pass
+    else:
+        last_heartbeat = datetime.fromtimestamp(modified, tz=UTC)
+        source = "file"
+
+    if last_heartbeat is None:
+        db_heartbeat = session.scalar(
+            select(func.max(HarvestJob.heartbeat_at)).where(
+                HarvestJob.status == "running"
+            )
+        )
+        if db_heartbeat is not None:
+            last_heartbeat = (
+                db_heartbeat
+                if db_heartbeat.tzinfo is not None
+                else db_heartbeat.replace(tzinfo=UTC)
+            )
+            source = "database"
+
+    if last_heartbeat is None:
+        return WorkerState(status="degraded", last_heartbeat=None, source=None)
+
+    age = (current - last_heartbeat).total_seconds()
+    status = "ok" if age <= stale else "degraded"
+    return WorkerState(status=status, last_heartbeat=last_heartbeat, source=source)
+
+
 JobHandler = Callable[[Session, HarvestJob], dict[str, Any] | None]
 
 
@@ -378,6 +492,11 @@ def worker_tick(
         return None, 0.0
 
     job_id = job.id
+    started_monotonic = time.monotonic()
+    logger.info(
+        "Trabajo reclamado",
+        extra={"job_id": job.id, "job_type": job.job_type, "result": "running"},
+    )
     session.commit()
 
     stop_event = threading.Event()
@@ -397,18 +516,50 @@ def worker_tick(
         stats = execute_job(session, job, handlers=handlers)
         finish_job(session, job, status="completed", stats=stats)
         session.commit()
+        logger.info(
+            "Trabajo completado",
+            extra={
+                "job_id": job.id,
+                "job_type": job.job_type,
+                "result": "completed",
+                "duration_ms": round(
+                    (time.monotonic() - started_monotonic) * 1000, 2
+                ),
+            },
+        )
         return job, 0.0
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         failed_job = session.get(HarvestJob, job_id)
         if failed_job is None:
             return None, 0.0
+        duration_ms = round((time.monotonic() - started_monotonic) * 1000, 2)
         if (failed_job.attempts or 0) >= (failed_job.max_attempts or 1):
             finish_job(session, failed_job, status="failed", error=str(exc))
             session.commit()
+            logger.error(
+                "Trabajo fallido",
+                extra={
+                    "job_id": failed_job.id,
+                    "job_type": failed_job.job_type,
+                    "result": "failed",
+                    "duration_ms": duration_ms,
+                    "error": str(exc),
+                },
+            )
             return failed_job, 0.0
         requeue_job(session, failed_job, error=str(exc))
         session.commit()
+        logger.warning(
+            "Trabajo reprogramado",
+            extra={
+                "job_id": failed_job.id,
+                "job_type": failed_job.job_type,
+                "result": "retry",
+                "duration_ms": duration_ms,
+                "error": str(exc),
+            },
+        )
         return failed_job, backoff_seconds(failed_job.attempts)
     finally:
         stop_event.set()
