@@ -1,0 +1,114 @@
+name: mediateca-enrich
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mediateca}
+      POSTGRES_USER: ${POSTGRES_USER:-mediateca}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mediateca}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - mediateca
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mediateca} -d ${POSTGRES_DB:-mediateca}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    restart: unless-stopped
+    environment:
+      MEILI_ENV: ${MEILI_ENV:-development}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev_master_key_change_me_123456}
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili_data:/meili_data
+    ports:
+      - "${MEILI_PORT:-7700}:7700"
+    networks:
+      - mediateca
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+    image: mediateca-enrich:local
+    restart: unless-stopped
+    environment:
+      MEDIATECA_ENVIRONMENT: ${MEDIATECA_ENVIRONMENT:-development}
+      MEDIATECA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mediateca}:${POSTGRES_PASSWORD:-mediateca}@db:5432/${POSTGRES_DB:-mediateca}
+      MEDIATECA_MEILISEARCH_URL: http://meilisearch:7700
+      MEDIATECA_MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev_master_key_change_me_123456}
+      MEDIATECA_MEILISEARCH_INDEX: ${MEDIATECA_MEILISEARCH_INDEX:-ediciones}
+      MEDIATECA_RAW_DIR: /data/raw
+      MEDIATECA_CRAWL_DELAY: ${MEDIATECA_CRAWL_DELAY:-1.0}
+      MEDIATECA_WORKER_CONCURRENCY: ${MEDIATECA_WORKER_CONCURRENCY:-1}
+      MEDIATECA_WORKER_POLL_SECONDS: ${MEDIATECA_WORKER_POLL_SECONDS:-5.0}
+      MEDIATECA_WORKER_HEARTBEAT_SECONDS: ${MEDIATECA_WORKER_HEARTBEAT_SECONDS:-30.0}
+      MEDIATECA_WORKER_HEARTBEAT_FILE: /tmp/mediateca-worker.heartbeat
+      MEDIATECA_LOG_LEVEL: ${MEDIATECA_LOG_LEVEL:-INFO}
+    volumes:
+      - raw_data:/data/raw
+    depends_on:
+      db:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -f /tmp/mediateca-worker.heartbeat && find /tmp/mediateca-worker.heartbeat -mmin -2 | grep -q .",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - mediateca
+    command: ["python", "-m", "mediateca", "worker"]
+
+  scheduler:
+    image: mediateca-enrich:local
+    restart: unless-stopped
+    profiles: ["jobs"]
+    environment:
+      MEDIATECA_ENVIRONMENT: ${MEDIATECA_ENVIRONMENT:-development}
+      MEDIATECA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mediateca}:${POSTGRES_PASSWORD:-mediateca}@db:5432/${POSTGRES_DB:-mediateca}
+      MEDIATECA_MEILISEARCH_URL: http://meilisearch:7700
+      MEDIATECA_MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev_master_key_change_me_123456}
+      MEDIATECA_MEILISEARCH_INDEX: ${MEDIATECA_MEILISEARCH_INDEX:-ediciones}
+      MEDIATECA_RAW_DIR: /data/raw
+      MEDIATECA_CRAWL_DELAY: ${MEDIATECA_CRAWL_DELAY:-1.0}
+      MEDIATECA_HARVEST_QUERIES: ${MEDIATECA_HARVEST_QUERIES:-cine,documental,animacion,musica}
+      MEDIATECA_SCHEDULER_HARVEST_HOURS: ${MEDIATECA_SCHEDULER_HARVEST_HOURS:-24}
+      MEDIATECA_LOG_LEVEL: ${MEDIATECA_LOG_LEVEL:-INFO}
+    volumes:
+      - raw_data:/data/raw
+    depends_on:
+      db:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+    networks:
+      - mediateca
+    command: ["python", "-m", "mediateca", "scheduler"]
+
+volumes:
+  postgres_data:
+  meili_data:
+  raw_data:
+
+networks:
+  mediateca:
+    name: mediateca
