@@ -87,7 +87,9 @@ def discover_command(
     console.print(f"[green]Descubrimiento terminado:[/green] {stats}")
     if index:
         with session_scope() as session:
-            total = MeiliIndexer().index_editions(session, reset=False)
+            total = MeiliIndexer().index_titns(
+                session, stats.get("processed_titns", [])
+            )
         console.print(f"[green]{total} ediciones indexadas[/green]")
 
 
@@ -97,6 +99,7 @@ def enrich_command(
         5000, "--limit", min=1, help="Fichas maximas por lote"
     ),
     delay: float = typer.Option(1.0, "--delay", min=0.1, help="Segundos entre peticiones"),
+    index: bool = typer.Option(False, "--index", help="Indexar el lote al terminar"),
 ) -> None:
     """Enriquece por lotes las ediciones descubiertas y pendientes."""
     configure_logging()
@@ -104,6 +107,12 @@ def enrich_command(
         harvester = Harvester(session, client=client)
         stats = harvester.harvest_enrichment(limit=limit, delay=delay)
     console.print(f"[green]Enriquecimiento terminado:[/green] {stats}")
+    if index:
+        with session_scope() as session:
+            total = MeiliIndexer().index_titns(
+                session, stats.get("processed_titns", [])
+            )
+        console.print(f"[green]{total} ediciones indexadas[/green]")
 
 
 @app.command("index")

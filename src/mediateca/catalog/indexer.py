@@ -109,6 +109,8 @@ def build_document(edicion: Edicion) -> dict[str, Any]:
         "guionistas": guionistas,
         "bibliotecas": bibliotecas,
         "ejemplares": len(edicion.ejemplares),
+        "detail_complete": edicion.detail_fetched_at is not None,
+        "is_stub": edicion.detail_fetched_at is None or bool(edicion.is_stub),
         "updated_at": edicion.updated_at.isoformat() if edicion.updated_at else None,
     }
 
@@ -214,6 +216,28 @@ class MeiliIndexer:
                 self._add_batch(batch)
                 batch = []
         self._add_batch(batch)
+        return total
+
+    def index_titns(self, session: Session, titns: Iterable[str]) -> int:
+        """Indexa solo las ediciones indicadas, en lotes de 200."""
+        self.ensure_index()
+        unique = list(dict.fromkeys(titn for titn in titns if titn))
+
+        total = 0
+        for start in range(0, len(unique), 200):
+            chunk = unique[start : start + 200]
+            stmt = (
+                select(Edicion)
+                .where(Edicion.titn.in_(chunk))
+                .options(
+                    selectinload(Edicion.ejemplares).selectinload(Ejemplar.biblioteca),
+                    selectinload(Edicion.personas).selectinload(EdicionPersona.persona),
+                    selectinload(Edicion.materias).selectinload(EdicionMateria.materia),
+                )
+            )
+            documents = [build_document(edicion) for edicion in session.scalars(stmt)]
+            self._add_batch(documents)
+            total += len(documents)
         return total
 
     def search(

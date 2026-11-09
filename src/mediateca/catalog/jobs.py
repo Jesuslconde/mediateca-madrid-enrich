@@ -247,6 +247,41 @@ def coverage(session: Session) -> IngestCoverage:
 JobHandler = Callable[[Session, HarvestJob], dict[str, Any] | None]
 
 
+def _pending_index_titns(job: HarvestJob) -> list[str]:
+    raw = (job.stats or {}).get("pending_index_titns") or []
+    return [str(titn) for titn in raw]
+
+
+def _index_titns_for_job(
+    session: Session, job: HarvestJob, titns: list[str] | tuple[str, ...]
+) -> int:
+    from mediateca.catalog.indexer import MeiliIndexer
+
+    targets = list(dict.fromkeys([*_pending_index_titns(job), *titns]))
+    if not targets:
+        return 0
+
+    try:
+        total = MeiliIndexer().index_titns(session, targets)
+    except Exception:
+        stats = dict(job.stats or {})
+        stats["pending_index_titns"] = targets
+        job.stats = stats
+        session.commit()
+        raise
+
+    stats = dict(job.stats or {})
+    stats.pop("pending_index_titns", None)
+    job.stats = stats
+    session.commit()
+    return total
+
+
+def _flush_pending_index(session: Session, job: HarvestJob) -> None:
+    if _pending_index_titns(job):
+        _index_titns_for_job(session, job, [])
+
+
 def _index_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.indexer import MeiliIndexer
 
@@ -257,17 +292,23 @@ def _index_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
 def _discover_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.harvester import Harvester, OpacClient
 
+    _flush_pending_index(session, job)
     with OpacClient() as client:
         harvester = Harvester(session, client=client)
-        return harvester.harvest_discovery(job=job)
+        stats = harvester.harvest_discovery(job=job)
+    _index_titns_for_job(session, job, stats.get("processed_titns", []))
+    return stats
 
 
 def _enrich_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.harvester import Harvester, OpacClient
 
+    _flush_pending_index(session, job)
     with OpacClient() as client:
         harvester = Harvester(session, client=client)
-        return harvester.harvest_enrichment(job=job)
+        stats = harvester.harvest_enrichment(job=job)
+    _index_titns_for_job(session, job, stats.get("processed_titns", []))
+    return stats
 
 
 DEFAULT_HANDLERS: dict[str, JobHandler] = {

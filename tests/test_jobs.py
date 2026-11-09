@@ -303,3 +303,112 @@ def test_reclamo_usa_skip_locked_en_postgresql() -> None:
     sql = str(stmt.compile(dialect=postgresql.dialect()))
 
     assert "FOR UPDATE SKIP LOCKED" in sql
+
+
+def test_worker_indexa_el_lote_al_terminar(monkeypatch) -> None:
+    import mediateca.catalog.harvester as harvester_module
+    import mediateca.catalog.indexer as indexer_module
+
+    session = _session()
+    create_job(session, "enrich", batch_size=10)
+    session.commit()
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class FakeHarvester:
+        def __init__(self, session, client) -> None:
+            pass
+
+        def harvest_enrichment(self, *, job):  # noqa: ANN001
+            return {"processed": 2, "processed_titns": ["1", "2"]}
+
+    class FakeIndexer:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def index_titns(self, session, titns):  # noqa: ANN001
+            self.calls.append(list(titns))
+            return len(titns)
+
+    fake_indexer = FakeIndexer()
+    monkeypatch.setattr(harvester_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(harvester_module, "Harvester", FakeHarvester)
+    monkeypatch.setattr(indexer_module, "MeiliIndexer", lambda: fake_indexer)
+
+    processed, backoff = worker_tick(session)
+    session.commit()
+
+    assert processed is not None
+    assert processed.status == "completed"
+    assert fake_indexer.calls == [["1", "2"]]
+    assert backoff == 0.0
+
+
+def test_titn_pendientes_de_indexar_se_reintentan(monkeypatch) -> None:
+    import mediateca.catalog.harvester as harvester_module
+    import mediateca.catalog.indexer as indexer_module
+
+    session = _session()
+    create_job(session, "enrich", batch_size=10, max_attempts=2)
+    session.commit()
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class FakeHarvester:
+        def __init__(self, session, client) -> None:
+            pass
+
+        def harvest_enrichment(self, *, job):  # noqa: ANN001
+            return {"processed": 2, "processed_titns": ["1", "2"]}
+
+    class FakeIndexer:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+            self.attempts = 0
+
+        def index_titns(self, session, titns):  # noqa: ANN001
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("meilisearch no disponible")
+            self.calls.append(list(titns))
+            return len(titns)
+
+    fake_indexer = FakeIndexer()
+    monkeypatch.setattr(harvester_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(harvester_module, "Harvester", FakeHarvester)
+    monkeypatch.setattr(indexer_module, "MeiliIndexer", lambda: fake_indexer)
+
+    first, backoff = worker_tick(session)
+    session.commit()
+
+    assert first is not None
+    assert first.status == "pending"
+    assert first.attempts == 1
+    assert first.stats["pending_index_titns"] == ["1", "2"]
+    assert backoff > 0
+
+    second, backoff = worker_tick(session)
+    session.commit()
+
+    assert second is not None
+    assert second.status == "completed"
+    assert second.attempts == 2
+    assert "pending_index_titns" not in second.stats
+    assert fake_indexer.calls[0] == ["1", "2"]
+    assert backoff == 0.0

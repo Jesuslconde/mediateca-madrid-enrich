@@ -434,6 +434,7 @@ class Harvester:
 
         processed = errors = 0
         failed: list[str] = []
+        processed_titns: list[str] = []
         last_titn = cursor_titn
         pending: list[str] = []
 
@@ -452,6 +453,7 @@ class Harvester:
                     logger.exception("Ficha %s fallida tras reintentos: %s", titn, exc)
                 else:
                     processed += 1
+                    processed_titns.append(titn)
                     logger.info("Ficha %s enriquecida", titn)
 
                 last_titn = titn
@@ -476,6 +478,7 @@ class Harvester:
                 "errors": errors,
                 "failed": failed,
                 "cursor_titn": last_titn,
+                "processed_titns": processed_titns,
             }
             run.status = "finished"
             run.stats = stats
@@ -590,6 +593,7 @@ class Harvester:
                 "pages": pages,
                 "errors": errors,
                 "missing": missing,
+                "processed_titns": sorted(seen),
             }
             run.status = "finished"
             run.stats = stats

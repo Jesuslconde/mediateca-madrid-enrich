@@ -79,11 +79,32 @@ crudo ni crea archivos en `MEDIATECA_RAW_DIR`. La tabla `snapshots`, el modelo
 `Snapshot`, la relacion `Edicion.snapshots` y `save_snapshot` se han retirado;
 `scripts/migrate_ingesta.sql` elimina la tabla de forma idempotente.
 
+## Indexacion incremental
+
+Cada lote de descubrimiento o enriquecimiento indexa solo los `TITN` procesados
+mediante `index_titns`, sin reconstruir el indice completo. Los `TITN` se consultan
+y envian a Meilisearch en lotes de 200; los documentos no mencionados permanecen
+intactos.
+
+Cada documento incluye `detail_complete` e `is_stub`. Una edicion descubierta pero
+sin `detail_fetched_at` se indexa como stub con `detail_complete=false`; al
+enriquecerse se actualiza con `detail_complete=true` y los nuevos campos.
+
+Si Meilisearch falla al terminar un lote, los `TITN` pendientes se guardan en
+`harvest_jobs.stats.pending_index_titns`. El reintento del trabajo los indexa antes
+de continuar con el siguiente lote. La reindexacion completa con
+`index_editions(reset=True)` queda reservada al comando manual
+`mediateca index --reset`, para cambios de esquema o reparaciones.
+
 ## Ejecucion
 
 - `mediateca discover --max-pages N --limit M`: ejecuta el descubrimiento y crea
   stubs. Sin `--max-pages` ni `--limit` recorre el catalogo completo.
 - `mediateca enrich --limit 5000`: ejecuta un lote de enriquecimiento. El limite
   por defecto es 5.000 fichas.
+- `mediateca discover --index` y `mediateca enrich --index` indexan solo el lote
+  procesado; el worker indexa automaticamente al terminar cada trabajo.
+- `mediateca index --reset`: reconstruye el indice completo, solo para cambios de
+  esquema o reparaciones.
 - El worker procesa los trabajos `discover` y `enrich` de `harvest_jobs` con el
   mismo checkpoint y reanudacion.
