@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="{{ refresh_seconds }}">
+    <title>Mediateca Madrid - Estado de la ingesta</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f8; color: #1c2430; }
+      header { background: #12355b; color: #fff; padding: 1.25rem 2rem; }
+      main { max-width: 1200px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
+      section { background: #fff; border: 1px solid #dde3ea; border-radius: 8px; padding: 1rem 1.25rem; margin-top: 1rem; }
+      h1 { margin: 0; font-size: 1.35rem; }
+      h2 { margin: 0 0 .75rem; font-size: 1.05rem; }
+      .muted { color: #5d6b7a; font-size: .9rem; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; }
+      .metric { background: #f9fafb; border: 1px solid #e5e9ef; border-radius: 6px; padding: .75rem; }
+      .metric strong { display: block; font-size: 1.5rem; }
+      .ok { color: #126b3a; font-weight: 600; }
+      .degraded { color: #a23014; font-weight: 600; }
+      table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+      th, td { text-align: left; padding: .5rem; border-bottom: 1px solid #e5e9ef; vertical-align: top; }
+      th { background: #f4f6f8; }
+      .error { color: #a23014; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Mediateca Madrid - Estado de la ingesta</h1>
+      <p class="muted">Vista de solo lectura. Se actualiza cada {{ refresh_seconds }} s. Generada {{ generated_at.strftime('%Y-%m-%d %H:%M:%S %Z') }}.</p>
+    </header>
+    <main>
+      <section>
+        <h2>Salud del worker</h2>
+        <p>
+          Estado:
+          <span class="{{ 'ok' if worker.status == 'ok' else 'degraded' }}">{{ worker.status }}</span>
+          {% if worker.last_heartbeat %}
+            | Ultimo heartbeat: {{ worker.last_heartbeat.strftime('%Y-%m-%d %H:%M:%S') }}
+            | Fuente: {{ worker.source }}
+          {% else %}
+            | Sin heartbeat registrado
+          {% endif %}
+        </p>
+      </section>
+
+      <section>
+        <h2>Trabajos por estado</h2>
+        <div class="grid">
+          {% for status, total in status_counts.items() %}
+            <div class="metric"><span class="muted">{{ status }}</span><strong>{{ total }}</strong></div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section>
+        <h2>Trabajos por tipo</h2>
+        <div class="grid">
+          {% for job_type, total in type_counts.items() %}
+            <div class="metric"><span class="muted">{{ job_type }}</span><strong>{{ total }}</strong></div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section>
+        <h2>Cobertura del catalogo</h2>
+        <div class="grid">
+          <div class="metric"><span class="muted">Ediciones</span><strong>{{ coverage.ediciones }}</strong></div>
+          <div class="metric"><span class="muted">Descubiertas</span><strong>{{ coverage.descubiertas }}</strong></div>
+          <div class="metric"><span class="muted">Enriquecidas</span><strong>{{ coverage.enriquecidas }}</strong></div>
+          <div class="metric"><span class="muted">Pendientes</span><strong>{{ coverage.pendientes }}</strong></div>
+          <div class="metric"><span class="muted">Fallidas</span><strong>{{ coverage.fallidas }}</strong></div>
+          <div class="metric"><span class="muted">Enriquecimiento</span><strong>{{ enrichment_percent }}%</strong></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Trabajos recientes</h2>
+        {% if jobs %}
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Tipo</th>
+                <th>Estado</th>
+                <th>Cursor</th>
+                <th>Intentos</th>
+                <th>Creado</th>
+                <th>Inicio</th>
+                <th>Fin</th>
+                <th>Heartbeat</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for job in jobs %}
+                <tr>
+                  <td>{{ job.id }}</td>
+                  <td>{{ job.job_type }}</td>
+                  <td>{{ job.status }}</td>
+                  <td>{{ job.cursor_doc if job.cursor_doc is not none else '—' }}/{{ job.cursor_titn if job.cursor_titn is not none else '—' }}</td>
+                  <td>{{ job.attempts or 0 }}/{{ job.max_attempts or 0 }}</td>
+                  <td>{{ job.created_at.strftime('%Y-%m-%d %H:%M') if job.created_at else '—' }}</td>
+                  <td>{{ job.started_at.strftime('%Y-%m-%d %H:%M') if job.started_at else '—' }}</td>
+                  <td>{{ job.finished_at.strftime('%Y-%m-%d %H:%M') if job.finished_at else '—' }}</td>
+                  <td>{{ job.heartbeat_at.strftime('%Y-%m-%d %H:%M') if job.heartbeat_at else '—' }}</td>
+                  <td class="error">{{ job.error or '' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">No hay trabajos registrados.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

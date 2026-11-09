@@ -4,7 +4,7 @@ q ?= cine
 pages ?= 1
 limit ?= 20
 
-.PHONY: help up down build logs ps init migrate harvest index worker-logs worker-shell test lint fmt shell psql clean
+.PHONY: help up down build logs ps init migrate harvest index worker-logs worker-shell dashboard dashboard-logs test lint fmt shell psql clean
 
 help: ## Mostrar la ayuda
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -23,6 +23,12 @@ logs: ## Ver logs en vivo
 
 worker-logs: ## Ver logs del worker en vivo
 	docker compose logs -f --tail=100 worker
+
+dashboard: ## Levantar el dashboard de estado
+	docker compose up -d dashboard
+
+dashboard-logs: ## Ver logs del dashboard en vivo
+	docker compose logs -f --tail=100 dashboard
 
 worker-shell: ## Abrir shell en el worker
 	docker compose exec worker bash

@@ -20,6 +20,8 @@ make help
 make harvest q=cine pages=2 limit=20
 make index
 make worker-logs
+make dashboard
+make dashboard-logs
 make test
 make lint
 make psql
@@ -34,6 +36,32 @@ docker compose run --rm worker mediateca enrich --limit 5000
 A 1 peticion por segundo cada lote tarda aproximadamente 1,4 horas. El trabajo
 guarda un cursor por `TITN`, reintenta las fichas fallidas y solo persiste datos
 parseados: no crea snapshots HTML ni escribe en `MEDIATECA_RAW_DIR`.
+
+## Dashboard de estado
+
+La vista web muestra en modo de solo lectura los trabajos por estado y tipo, los
+trabajos recientes, la cobertura del catalogo y la salud del worker. No crea,
+modifica ni elimina datos, no encola trabajos y no toca el indice.
+
+```bash
+make dashboard        # Levanta el servicio dashboard en segundo plano
+make dashboard-logs   # Sigue los logs del servicio
+```
+
+Queda disponible en `http://localhost:8080`. En local tambien se puede arrancar
+con el comando de la CLI:
+
+```bash
+mediateca dashboard --host 127.0.0.1 --port 8080
+```
+
+Variables de configuracion:
+
+- `MEDIATECA_DASHBOARD_HOST` y `MEDIATECA_DASHBOARD_PORT`: host y puerto de escucha.
+- `MEDIATECA_DASHBOARD_REFRESH_SECONDS`: intervalo de refresco automatico de la pagina.
+- `MEDIATECA_DASHBOARD_RECENT_LIMIT`: numero de trabajos recientes mostrados.
+- `MEDIATECA_DASHBOARD_WORKER_STALE_SECONDS`: antiguedad maxima del heartbeat antes
+  de marcar el worker como `degraded`.
 
 ## Migraciones
 

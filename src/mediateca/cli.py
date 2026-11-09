@@ -285,5 +285,27 @@ def scheduler_command() -> None:
         console.print("Scheduler detenido")
 
 
+@app.command("dashboard")
+def dashboard_command(
+    host: str | None = typer.Option(
+        None, "--host", help="Host de escucha (por defecto, configuracion)"
+    ),
+    port: int | None = typer.Option(
+        None, "--port", min=1, help="Puerto de escucha (por defecto, configuracion)"
+    ),
+    reload: bool = typer.Option(False, "--reload", help="Recargar al cambiar el codigo"),
+) -> None:
+    """Sirve la vista web de solo lectura del estado de la ingesta."""
+    import uvicorn
+
+    configure_logging()
+    uvicorn.run(
+        "mediateca.dashboard.app:app",
+        host=host or settings.dashboard_host,
+        port=port or settings.dashboard_port,
+        reload=reload,
+    )
+
+
 if __name__ == "__main__":
     app()

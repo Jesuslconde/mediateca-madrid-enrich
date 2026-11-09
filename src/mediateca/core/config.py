@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     worker_heartbeat_seconds: float = 30.0
     worker_heartbeat_file: Path = Path("/tmp/mediateca-worker.heartbeat")
 
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = 8080
+    dashboard_refresh_seconds: int = 15
+    dashboard_recent_limit: int = 20
+    dashboard_worker_stale_seconds: int = 120
+
     @property
     def cors_origins(self) -> list[str]:
         return [item.strip() for item in self.api_cors_origins.split(",") if item.strip()]

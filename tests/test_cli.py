@@ -106,3 +106,10 @@ def test_cli_enrich_procesa_el_lote(monkeypatch, dvd_fixture) -> None:
     assert edicion.titn == "2101557"
     assert edicion.detail_fetched_at is not None
     assert edicion.is_stub is False
+
+
+def test_cli_incluye_el_comando_dashboard() -> None:
+    result = CliRunner().invoke(cli_module.app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "dashboard" in result.output

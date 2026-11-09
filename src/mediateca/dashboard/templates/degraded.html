@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="{{ refresh_seconds }}">
+    <title>Mediateca Madrid - Estado no disponible</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f8; color: #1c2430; }
+      header { background: #7a2b16; color: #fff; padding: 1.25rem 2rem; }
+      main { max-width: 900px; margin: 0 auto; padding: 2rem; }
+      section { background: #fff; border: 1px solid #e8c9be; border-radius: 8px; padding: 1.25rem; }
+      h1 { margin: 0; font-size: 1.25rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Mediateca Madrid - Estado de la ingesta</h1>
+    </header>
+    <main>
+      <section>
+        <h2>Estado degradado</h2>
+        <p>{{ message }}</p>
+        <p class="muted">La pagina se reintentara automaticamente cada {{ refresh_seconds }} s. Generada {{ generated_at.strftime('%Y-%m-%d %H:%M:%S %Z') }}.</p>
+      </section>
+    </main>
+  </body>
+</html>
