@@ -1,4 +1,4 @@
-from mediateca.catalog.parser import parse_detail, parse_file
+from mediateca.catalog.parser import parse_detail, parse_file, parse_search_results
 
 
 def test_parsea_dvd(dvd_fixture) -> None:
@@ -73,3 +73,33 @@ def test_parsea_bluray(bluray_fixture) -> None:
     assert len(parsed.ejemplares) == 1
     assert parsed.ejemplares[0].soporte == "Blu-ray"
     assert parsed.ejemplares[0].signatura == "BRD-00219"
+
+
+def test_parsea_listado_de_resultados(search_results_fixture) -> None:
+    html = search_results_fixture.read_text(encoding="utf-8")
+
+    resultados = parse_search_results(html)
+
+    assert len(resultados) == 3
+    primero = resultados[0]
+    assert primero.doc == 1
+    assert primero.titn == "2101557"
+    assert primero.titulo.startswith("20.000 especies de abejas")
+    assert primero.anio == 2023
+    assert primero.idioma == "spa"
+    assert primero.descripcion_fisica.startswith("1 DVD-Video")
+    assert primero.marc["T300a"].startswith("1 DVD-Video")
+    assert primero.soportes == ["DVD"]
+    assert "Dramas cinematográficos" in primero.generos
+    assert "Cine español" in primero.materias
+    assert primero.personas[0].nombre == "Urresola Solaguren, Estíbaliz"
+    assert primero.personas[0].roles == ["director de cine"]
+
+    assert resultados[1].titn == "2107423"
+    assert resultados[1].soportes == ["Blu-ray"]
+    assert resultados[1].ean == "8436587701634"
+
+    assert resultados[2].titn == "2109999"
+    assert resultados[2].anio == 1998
+    assert resultados[2].soportes == ["VHS"]
+

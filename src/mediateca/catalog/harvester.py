@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,11 +10,17 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
-from mediateca_shared.models import HarvestRun
+from mediateca_shared.models import HarvestJob, HarvestRun
 from sqlalchemy.orm import Session
 
-from mediateca.catalog.parser import parse_detail
-from mediateca.catalog.repository import save_snapshot, upsert_edicion
+from mediateca.catalog.jobs import create_job, finish_job, update_cursor
+from mediateca.catalog.parser import parse_detail, parse_search_results
+from mediateca.catalog.repository import (
+    mark_absent_since,
+    save_snapshot,
+    upsert_edicion,
+    upsert_stub,
+)
 from mediateca.core.config import settings
 from mediateca.core.logging import get_logger
 
@@ -51,6 +58,7 @@ class SearchPage:
     total: int
     items: list[SearchItem] = field(default_factory=list)
     next_url: str | None = None
+    html: str = ""
 
 
 class OpacClient:
@@ -140,7 +148,9 @@ class OpacClient:
         if "timeout.htm" in text or "Sesión expirada" in text:
             raise SessionExpired("La sesion del OPAC ha caducado")
 
-    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+    def _request(
+        self, method: str, url: str, *, recover_session: bool = True, **kwargs
+    ) -> httpx.Response:
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -149,6 +159,8 @@ class OpacClient:
                 response.raise_for_status()
                 return response
             except SessionExpired:
+                if not recover_session:
+                    raise
                 logger.info("Sesion caducada; renovando")
                 self.open_session()
                 url = self._rebind_session(url)
@@ -208,7 +220,13 @@ class OpacClient:
             if candidates:
                 next_url = min(candidates, key=lambda item: item[0])[1]
 
-        return SearchPage(query=query, total=total, items=items, next_url=next_url)
+        return SearchPage(
+            query=query,
+            total=total,
+            items=items,
+            next_url=next_url,
+            html=response.text,
+        )
 
     def search(self, query: str) -> SearchPage:
         self._ensure_session()
@@ -227,9 +245,62 @@ class OpacClient:
         response = self._request("POST", self._url(1), data=data)
         return self._parse_results(response, query)
 
-    def fetch_search_page(self, url: str, query: str) -> SearchPage:
-        response = self._request("GET", url)
+    def fetch_search_page(
+        self, url: str, query: str, *, recover_session: bool = True
+    ) -> SearchPage:
+        response = self._request("GET", url, recover_session=recover_session)
         return self._parse_results(response, query)
+
+    def _doc_page_url(self, doc: int) -> str:
+        return f"{self._url(1)}?ACC=161&DOC={int(doc)}"
+
+    def _recover_search_page(self, query: str, doc: int | None) -> SearchPage:
+        self.open_session()
+        self.search(query)
+        if doc is None:
+            return self.fetch_search_page(self._url(1), query, recover_session=False)
+        return self.fetch_search_page(
+            self._doc_page_url(doc), query, recover_session=False
+        )
+
+    def search_all(
+        self,
+        query: str = "*",
+        *,
+        max_pages: int | None = None,
+        start_doc: int | None = None,
+    ) -> Iterator[SearchPage]:
+        """Recorre la paginacion profunda y recupera la sesion si caduca."""
+        page = self.search(query)
+        if start_doc is not None:
+            if not page.items or start_doc > page.items[-1].doc:
+                page = self.fetch_search_page(
+                    self._doc_page_url(start_doc), query, recover_session=False
+                )
+            else:
+                page.items = [item for item in page.items if item.doc >= start_doc]
+
+        pages = 0
+        while page is not None:
+            yield page
+            pages += 1
+            if max_pages is not None and pages >= max_pages:
+                break
+            if not page.next_url:
+                break
+
+            last_doc = page.items[-1].doc if page.items else start_doc
+            try:
+                page = self.fetch_search_page(
+                    page.next_url, query, recover_session=False
+                )
+            except SessionExpired:
+                logger.info(
+                    "Sesion caducada durante la paginacion; re-buscando y saltando a DOC=%s",
+                    last_doc,
+                )
+                next_doc = last_doc + 1 if last_doc is not None else None
+                page = self._recover_search_page(query, next_doc)
 
     def fetch_detail(self, url: str) -> tuple[str, str]:
         response = self._request("GET", url)
@@ -319,6 +390,120 @@ class Harvester:
         except Exception as exc:  # noqa: BLE001
             run.status = "failed"
             run.error = str(exc)
+            raise
+        finally:
+            run.finished_at = datetime.now(UTC)
+            self.session.commit()
+
+    def harvest_discovery(
+        self,
+        *,
+        max_pages: int | None = None,
+        limit: int | None = None,
+        delay: float | None = None,
+        cursor_doc: int | None = None,
+        cursor_titn: str | None = None,
+        job: HarvestJob | None = None,
+    ) -> dict[str, int]:
+        delay = self.client.delay if delay is None else delay
+        owns_job = job is None
+        if job is None:
+            job = create_job(
+                self.session,
+                "discover",
+                cursor_doc=cursor_doc,
+                cursor_titn=cursor_titn,
+            )
+        else:
+            cursor_doc = cursor_doc if cursor_doc is not None else job.cursor_doc
+            cursor_titn = cursor_titn if cursor_titn is not None else job.cursor_titn
+        self.session.commit()
+
+        started_at = datetime.now(UTC)
+        run = HarvestRun(kind="discover", query="*", status="running")
+        self.session.add(run)
+        self.session.commit()
+
+        seen: set[str] = set()
+        processed = pages = errors = missing = 0
+        resume_titn = cursor_titn if cursor_doc is not None else None
+        first_page = True
+        limit_reached = False
+        full_run = cursor_doc is None and max_pages is None and limit is None
+        last_doc = cursor_doc
+        last_titn = cursor_titn
+
+        try:
+            for page in self.client.search_all(
+                "*", max_pages=max_pages, start_doc=cursor_doc
+            ):
+                page_items = parse_search_results(page.html)
+                if first_page:
+                    first_page = False
+                    if resume_titn and page_items:
+                        if page_items[0].titn != resume_titn:
+                            logger.warning(
+                                "El cursor TITN %s no coincide con el primer resultado %s",
+                                resume_titn,
+                                page_items[0].titn,
+                            )
+
+                for parsed in page_items:
+                    if resume_titn and parsed.titn == resume_titn:
+                        resume_titn = None
+                        continue
+                    if limit is not None and processed >= limit:
+                        limit_reached = True
+                        break
+                    try:
+                        with self.session.begin_nested():
+                            upsert_stub(self.session, parsed)
+                    except Exception as exc:  # noqa: BLE001
+                        errors += 1
+                        logger.exception("Error creando stub %s: %s", parsed.titn, exc)
+                        continue
+
+                    processed += 1
+                    seen.add(parsed.titn)
+                    last_titn = parsed.titn
+                    if parsed.doc is not None:
+                        last_doc = parsed.doc
+
+                pages += 1
+                self.session.commit()
+                update_cursor(
+                    self.session,
+                    job,
+                    cursor_doc=last_doc,
+                    cursor_titn=last_titn,
+                    stats={"processed": processed, "pages": pages, "errors": errors},
+                )
+                self.session.commit()
+                time.sleep(delay)
+                if limit_reached:
+                    break
+
+            if full_run and processed > 0:
+                missing = mark_absent_since(
+                    self.session, seen, since=started_at
+                )
+
+            stats = {
+                "processed": processed,
+                "pages": pages,
+                "errors": errors,
+                "missing": missing,
+            }
+            run.status = "finished"
+            run.stats = stats
+            if owns_job:
+                finish_job(self.session, job, status="completed", stats=stats)
+            return stats
+        except Exception as exc:  # noqa: BLE001
+            run.status = "failed"
+            run.error = str(exc)
+            if owns_job:
+                finish_job(self.session, job, status="failed", error=str(exc))
             raise
         finally:
             run.finished_at = datetime.now(UTC)

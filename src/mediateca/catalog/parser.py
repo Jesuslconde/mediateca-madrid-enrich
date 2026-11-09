@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
 
 
 MARC_KEY_RE = re.compile(
-    r"^(T\d{3}[a-z]*|TITN|LENG|FEPU|ntitl|nauth|nedit|nedic|nisbn|nissn|ld06|ld07)$"
+    r"^(T\d{3}[a-z]*|TITN|LENG|FEPU|MATE|ntitl|nauth|nedit|nedic|nisbn|nissn|ld06|ld07)$"
 )
 
 
@@ -71,6 +71,8 @@ class ParsedEdicion:
     ejemplares: list[ParsedEjemplar] = field(default_factory=list)
     enlaces: list[ParsedEnlace] = field(default_factory=list)
     source_url: str | None = None
+    descripcion_fisica: str | None = None
+    doc: int | None = None
 
     @property
     def soporte_principal(self) -> str | None:
@@ -317,13 +319,137 @@ def _parse_generos(soup: BeautifulSoup, data: dict[str, str], marc: dict[str, An
     return _unique(values)
 
 
-def _parse_materias(soup: BeautifulSoup, data: dict[str, str]) -> list[str]:
+def _parse_materias(
+    soup: BeautifulSoup | Tag, data: dict[str, str], marc: dict[str, Any]
+) -> list[str]:
     values: list[str | None] = [
         _text(li) for li in soup.select(".doc_icm_T6XX li")
     ]
     if "Materias" in data:
         values.append(data["Materias"])
+    mate = marc.get("MATE")
+    if isinstance(mate, str):
+        values.append(mate)
+    elif isinstance(mate, list):
+        values.extend(mate)
     return _unique(values)
+
+
+def _first_marc_value(value: Any) -> str | None:
+    if isinstance(value, list):
+        value = value[0] if value else None
+    return clean(value)
+
+
+def _search_doc(scope: Tag) -> int | None:
+    doc = clean(scope.get("data-doc") or scope.get("data-documento"))
+    if doc and doc.isdigit():
+        return int(doc)
+    for anchor in scope.select("a[href]"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        match = re.search(r"ACC=165(?:&amp;|&)DOC=(\d+)", str(href))
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _search_source_url(scope: Tag) -> str | None:
+    for anchor in scope.select("a[href]"):
+        href = anchor.get("href")
+        if href and "ACC=165" in str(href):
+            return str(href)
+    return None
+
+
+def _parse_search_item(scope: Tag) -> ParsedEdicion | None:
+    data = _dt_dd(scope)  # type: ignore[arg-type]
+    marc = _marc(scope)  # type: ignore[arg-type]
+
+    titn = clean(_first_marc_value(marc.get("TITN")) or _js_text(scope, "TITN"))
+    if not titn:
+        return None
+
+    titulo = clean(
+        _first_marc_value(marc.get("T245a"))
+        or _first_marc_value(marc.get("T245"))
+        or _js_text(scope, "ntitl")
+        or _text(
+            scope.select_one("a.c-docs_title, h3 a, .c-docs_header a"),
+            strip_trailing=True,
+        )
+    ) or titn
+
+    publicacion = (
+        data.get("Publicación")
+        or _first_marc_value(marc.get("T260ab"))
+        or _first_marc_value(marc.get("T260"))
+    )
+    descripcion_fisica = (
+        data.get("Descripción física")
+        or data.get("Extensión")
+        or _first_marc_value(marc.get("T300a"))
+    )
+    t008 = _first_marc_value(marc.get("T008"))
+
+    notas = {
+        label: value
+        for label, value in data.items()
+        if label not in {"Título uniforme", "Título", "Publicación", "Descripción física"}
+    }
+    for label, key in (
+        ("Nota de participantes o intérpretes", "T511"),
+        ("Nota de contenido", "T505"),
+        ("Nota de lengua", "T546"),
+    ):
+        value = _first_marc_value(marc.get(key))
+        if value:
+            notas.setdefault(label, value)
+
+    return ParsedEdicion(
+        titn=str(titn),
+        titulo=titulo,
+        publicacion=publicacion,
+        anio=_extract_year(
+            data.get("Año"),
+            _first_marc_value(marc.get("T260c")),
+            _first_marc_value(marc.get("FEPU")),
+            publicacion,
+            descripcion_fisica,
+            t008,
+        ),
+        idioma=_first_marc_value(marc.get("LENG")),
+        pais=clean(t008[15:17]) if t008 and len(t008) >= 17 else None,
+        duracion_min=_extract_duration(descripcion_fisica),
+        edad_recomendada=(
+            data.get("Nota del nivel del destinatario")
+            or _first_marc_value(marc.get("T521"))
+        ),
+        sinopsis=data.get("Sumario, etc.") or _first_marc_value(marc.get("T520")),
+        generos=_parse_generos(scope, data, marc),  # type: ignore[arg-type]
+        materias=_parse_materias(scope, data, marc),
+        soportes=detect_soportes(descripcion_fisica),
+        ean=_first_marc_value(marc.get("T024a")),
+        tipo_documento=data.get("Tipo de documento"),
+        notas=notas,
+        marc=marc,
+        personas=_parse_personas(scope),  # type: ignore[arg-type]
+        source_url=_search_source_url(scope),
+        descripcion_fisica=descripcion_fisica,
+        doc=_search_doc(scope),
+    )
+
+
+def parse_search_results(html: str) -> list[ParsedEdicion]:
+    """Extrae los registros de una pagina de listado del OPAC."""
+    soup = BeautifulSoup(html, BS_PARSER)
+    resultados: list[ParsedEdicion] = []
+    for scope in soup.select("li.c-docs_unit"):
+        parsed = _parse_search_item(scope)
+        if parsed is not None:
+            resultados.append(parsed)
+    return resultados
 
 
 def parse_detail(html: str, url: str | None = None) -> ParsedEdicion:
@@ -368,7 +494,7 @@ def parse_detail(html: str, url: str | None = None) -> ParsedEdicion:
         idioma = clean(t008_raw[35:38])
 
     generos = _parse_generos(soup, data, marc)
-    materias = _parse_materias(soup, data)
+    materias = _parse_materias(soup, data, marc)
 
     ejemplares = _parse_ejemplares(soup)
     soportes = detect_soportes(
@@ -414,6 +540,7 @@ def parse_detail(html: str, url: str | None = None) -> ParsedEdicion:
         ejemplares=ejemplares,
         enlaces=_parse_enlaces(soup),
         source_url=enlace_permanente or url,
+        descripcion_fisica=descripcion_fisica,
     )
 
 

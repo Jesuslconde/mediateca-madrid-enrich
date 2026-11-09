@@ -68,6 +68,29 @@ def harvest_command(
         console.print(f"[green]{total} ediciones indexadas[/green]")
 
 
+@app.command("discover")
+def discover_command(
+    max_pages: int | None = typer.Option(
+        None, "--max-pages", min=1, help="Paginas maximas (todas por defecto)"
+    ),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="TITN maximos"),
+    delay: float = typer.Option(1.0, "--delay", min=0.1, help="Segundos entre peticiones"),
+    index: bool = typer.Option(False, "--index", help="Indexar al terminar"),
+) -> None:
+    """Descubre el catalogo completo y crea ediciones stub."""
+    configure_logging()
+    with session_scope() as session, OpacClient(delay=delay) as client:
+        harvester = Harvester(session, client=client)
+        stats = harvester.harvest_discovery(
+            max_pages=max_pages, limit=limit, delay=delay
+        )
+    console.print(f"[green]Descubrimiento terminado:[/green] {stats}")
+    if index:
+        with session_scope() as session:
+            total = MeiliIndexer().index_editions(session, reset=False)
+        console.print(f"[green]{total} ediciones indexadas[/green]")
+
+
 @app.command("index")
 def index_command(
     reset: bool = typer.Option(False, "--reset", help="Vaciar el indice antes de cargar"),

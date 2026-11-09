@@ -185,6 +185,49 @@ def test_worker_tick_procesa_un_trabajo() -> None:
     assert seen == ["enrich"]
 
 
+def test_worker_ejecuta_el_handler_discover(monkeypatch) -> None:
+    import mediateca.catalog.harvester as harvester_module
+
+    session = _session()
+    job = create_job(session, "discover", cursor_doc=10, cursor_titn="123")
+    session.commit()
+
+    visto: dict[str, int] = {}
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class FakeHarvester:
+        def __init__(self, session, client) -> None:
+            pass
+
+        def harvest_discovery(self, *, job):  # noqa: ANN001
+            visto["job_id"] = job.id
+            assert job.cursor_doc == 10
+            assert job.cursor_titn == "123"
+            return {"processed": 2}
+
+    monkeypatch.setattr(harvester_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(harvester_module, "Harvester", FakeHarvester)
+
+    processed, backoff = worker_tick(session)
+    session.commit()
+
+    assert processed is not None
+    assert processed.id == job.id
+    assert processed.status == "completed"
+    assert processed.stats == {"processed": 2}
+    assert visto["job_id"] == job.id
+    assert backoff == 0.0
+
+
 def test_worker_tick_reintenta_y_termina_en_failed() -> None:
     session = _session()
     create_job(session, "enrich", max_attempts=2)

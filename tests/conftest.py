@@ -21,3 +21,8 @@ def dvd_fixture() -> Path:
 @pytest.fixture
 def bluray_fixture() -> Path:
     return FIXTURES / "detail_bluray.html"
+
+
+@pytest.fixture
+def search_results_fixture() -> Path:
+    return FIXTURES / "search_results.html"

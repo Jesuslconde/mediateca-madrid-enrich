@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from mediateca_shared.models import (
@@ -239,6 +240,85 @@ def upsert_edicion(session: Session, parsed: ParsedEdicion) -> Edicion:
 
     session.flush()
     return edicion
+
+
+def upsert_stub(session: Session, parsed: ParsedEdicion) -> Edicion:
+    timestamp = datetime.now(UTC)
+    edicion = session.scalars(
+        select(Edicion).where(Edicion.titn == parsed.titn)
+    ).first()
+
+    if edicion is None:
+        edicion = Edicion(
+            titn=parsed.titn,
+            titulo=parsed.titulo,
+            publicacion=parsed.publicacion,
+            anio=parsed.anio,
+            idioma=parsed.idioma,
+            pais=parsed.pais,
+            duracion_min=parsed.duracion_min,
+            generos=parsed.generos,
+            soportes=parsed.soportes,
+            soporte_principal=soporte_principal(parsed.soportes),
+            ean=parsed.ean,
+            tipo_documento=parsed.tipo_documento,
+            notas=parsed.notas,
+            marc=parsed.marc,
+            source_url=parsed.source_url,
+            is_stub=True,
+            discovery_seen_at=timestamp,
+        )
+        session.add(edicion)
+        session.flush()
+        return edicion
+
+    edicion.discovery_seen_at = timestamp
+    edicion.missing_at = None
+
+    if edicion.is_stub:
+        edicion.titulo = parsed.titulo or edicion.titulo
+        edicion.publicacion = parsed.publicacion
+        edicion.anio = parsed.anio
+        edicion.idioma = parsed.idioma
+        edicion.pais = parsed.pais
+        edicion.duracion_min = parsed.duracion_min
+        edicion.generos = parsed.generos
+        edicion.soportes = parsed.soportes
+        edicion.soporte_principal = soporte_principal(parsed.soportes)
+        edicion.ean = parsed.ean
+        edicion.tipo_documento = parsed.tipo_documento
+        edicion.notas = parsed.notas
+        edicion.marc = parsed.marc
+        edicion.source_url = parsed.source_url
+
+    session.flush()
+    return edicion
+
+
+def mark_absent_since(
+    session: Session,
+    seen_titns: Iterable[str],
+    *,
+    since: datetime,
+    missing_at: datetime | None = None,
+) -> int:
+    """Marca como ausentes las ediciones no vistas desde ``since``."""
+    seen = set(seen_titns)
+    stmt = select(Edicion).where(
+        Edicion.discovery_seen_at.is_not(None),
+        Edicion.discovery_seen_at < since,
+    )
+    if seen:
+        stmt = stmt.where(Edicion.titn.not_in(seen))
+
+    timestamp = missing_at or datetime.now(UTC)
+    ausentes = 0
+    for edicion in session.scalars(stmt):
+        if edicion.missing_at is None:
+            edicion.missing_at = timestamp
+            ausentes += 1
+    session.flush()
+    return ausentes
 
 
 def save_snapshot(
