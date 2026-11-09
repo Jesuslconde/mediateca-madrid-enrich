@@ -49,9 +49,41 @@ inicio del trabajo que no han vuelto a aparecer se marcan con `missing_at`; nunc
 se eliminan automaticamente. Las ediciones nuevas quedan pendientes de
 enriquecimiento.
 
+## Enriquecimiento por lotes
+
+El enriquecimiento selecciona hasta 5.000 ediciones con `detail_fetched_at` vacio,
+ordenadas por `TITN`, descarga la ficha de cada una mediante `?TITN=...&FORM=1`,
+la parsea y actualiza la edicion y sus ejemplares. El lote termina cuando no quedan
+`TITN` pendientes o se alcanza el limite.
+
+A 1 peticion por segundo, un lote de 5.000 fichas tarda aproximadamente 1,4 horas;
+la primera pasada completa de 67.215 fichas requiere unas 14 ejecuciones nocturnas.
+El tamano del lote y el retardo son configurables desde `mediateca enrich`.
+
+## Cursor, reintentos y errores
+
+El trabajo `enrich` guarda el ultimo `TITN` procesado en `cursor_titn` y actualiza
+las estadisticas tras cada ficha. Si el worker se reinicia, el siguiente trabajo
+continua desde el siguiente `TITN` pendiente y no repite las fichas ya marcadas con
+`detail_fetched_at`.
+
+Cada ficha se reintenta hasta el maximo configurado en el cliente del OPAC. Un fallo
+persistente se registra en las estadisticas del trabajo y del `harvest_run`, se
+excluye del lote activo y no bloquea al resto. La actualizacion es idempotente por
+`TITN`; los ejemplares se sincronizan por `external_key` sin duplicarse.
+
+## Sin snapshots
+
+El enriquecimiento solo persiste datos normalizados en PostgreSQL. No escribe HTML
+crudo ni crea archivos en `MEDIATECA_RAW_DIR`. La tabla `snapshots`, el modelo
+`Snapshot`, la relacion `Edicion.snapshots` y `save_snapshot` se han retirado;
+`scripts/migrate_ingesta.sql` elimina la tabla de forma idempotente.
+
 ## Ejecucion
 
 - `mediateca discover --max-pages N --limit M`: ejecuta el descubrimiento y crea
   stubs. Sin `--max-pages` ni `--limit` recorre el catalogo completo.
-- El worker procesa los trabajos `discover` de `harvest_jobs` con el mismo
-  checkpoint y reanudacion.
+- `mediateca enrich --limit 5000`: ejecuta un lote de enriquecimiento. El limite
+  por defecto es 5.000 fichas.
+- El worker procesa los trabajos `discover` y `enrich` de `harvest_jobs` con el
+  mismo checkpoint y reanudacion.

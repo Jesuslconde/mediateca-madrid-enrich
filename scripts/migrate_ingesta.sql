@@ -62,3 +62,6 @@ WHERE detail_fetched_at IS NULL
 CREATE INDEX IF NOT EXISTS ix_ediciones_is_stub ON ediciones (is_stub);
 CREATE INDEX IF NOT EXISTS ix_ediciones_discovery_seen_at ON ediciones (discovery_seen_at);
 CREATE INDEX IF NOT EXISTS ix_ediciones_detail_fetched_at ON ediciones (detail_fetched_at);
+
+-- Retirada de snapshots HTML: el enriquecimiento guarda solo datos parseados.
+DROP TABLE IF EXISTS snapshots;

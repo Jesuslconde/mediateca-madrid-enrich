@@ -262,8 +262,17 @@ def _discover_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
         return harvester.harvest_discovery(job=job)
 
 
+def _enrich_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
+    from mediateca.catalog.harvester import Harvester, OpacClient
+
+    with OpacClient() as client:
+        harvester = Harvester(session, client=client)
+        return harvester.harvest_enrichment(job=job)
+
+
 DEFAULT_HANDLERS: dict[str, JobHandler] = {
     "discover": _discover_handler,
+    "enrich": _enrich_handler,
     "index": _index_handler,
 }
 

@@ -16,7 +16,6 @@ from mediateca_shared.models import (
     Materia,
     Obra,
     Persona,
-    Snapshot,
 )
 from mediateca_shared.soportes import soporte_principal
 from sqlalchemy import func, select
@@ -321,20 +320,15 @@ def mark_absent_since(
     return ausentes
 
 
-def save_snapshot(
+def select_pending_titns(
     session: Session,
-    edicion: Edicion,
     *,
-    url: str,
-    html: str,
-    path: str,
-) -> Snapshot:
-    snapshot = Snapshot(
-        edicion=edicion,
-        titn=edicion.titn,
-        url=url,
-        path=path,
-        sha256=hashlib.sha256(html.encode("utf-8", errors="replace")).hexdigest(),
-    )
-    session.add(snapshot)
-    return snapshot
+    limit: int = 5000,
+    after_titn: str | None = None,
+) -> list[str]:
+    """Devuelve hasta ``limit`` TITN pendientes de enriquecer, ordenados por TITN."""
+    stmt = select(Edicion.titn).where(Edicion.detail_fetched_at.is_(None))
+    if after_titn is not None:
+        stmt = stmt.where(Edicion.titn > after_titn)
+    stmt = stmt.order_by(Edicion.titn).limit(limit)
+    return list(session.scalars(stmt))

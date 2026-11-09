@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 import mediateca.cli as cli_module
 from mediateca.catalog.harvester import Harvester, SearchPage
+from mediateca.catalog.jobs import create_stub
 from mediateca.core.db import Base
 
 
@@ -58,9 +59,7 @@ def test_cli_discover_crea_stubs(
     monkeypatch.setattr(
         cli_module,
         "Harvester",
-        lambda session, client: Harvester(
-            session, client=client, raw_dir=tmp_path
-        ),
+        lambda session, client: Harvester(session, client=client),
     )
 
     result = CliRunner().invoke(
@@ -69,3 +68,41 @@ def test_cli_discover_crea_stubs(
 
     assert result.exit_code == 0, result.output
     assert session.scalar(select(func.count(Edicion.id))) == 3
+
+
+def test_cli_enrich_procesa_el_lote(monkeypatch, dvd_fixture) -> None:
+    session = _session()
+    create_stub(session, "2101557")
+    session.commit()
+    html = dvd_fixture.read_text(encoding="utf-8")
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.delay = 0.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+        def fetch_by_titn(self, titn: str) -> tuple[str, str]:
+            return html, f"https://opac.example/TITN={titn}"
+
+    @contextmanager
+    def fake_session_scope():
+        yield session
+        session.commit()
+
+    monkeypatch.setattr(cli_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(cli_module, "session_scope", fake_session_scope)
+
+    result = CliRunner().invoke(
+        cli_module.app, ["enrich", "--limit", "5000", "--delay", "0.1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    edicion = session.scalars(select(Edicion)).one()
+    assert edicion.titn == "2101557"
+    assert edicion.detail_fetched_at is not None
+    assert edicion.is_stub is False

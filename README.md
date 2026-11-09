@@ -25,10 +25,21 @@ make lint
 make psql
 ```
 
+El enriquecimiento completo se ejecuta en lotes de 5.000 fichas:
+
+```bash
+docker compose run --rm worker mediateca enrich --limit 5000
+```
+
+A 1 peticion por segundo cada lote tarda aproximadamente 1,4 horas. El trabajo
+guarda un cursor por `TITN`, reintenta las fichas fallidas y solo persiste datos
+parseados: no crea snapshots HTML ni escribe en `MEDIATECA_RAW_DIR`.
+
 ## Migraciones
 
 - `scripts/migrate_disponibilidad.sql`: retirada del estado de prestamo.
-- `scripts/migrate_ingesta.sql`: `harvest_jobs`, marcas de progreso y `schema_meta`.
+- `scripts/migrate_ingesta.sql`: `harvest_jobs`, marcas de progreso, `schema_meta`
+  y retirada idempotente de la tabla `snapshots`.
 
 Ambas son idempotentes. `make migrate` requiere PostgreSQL levantado.
 

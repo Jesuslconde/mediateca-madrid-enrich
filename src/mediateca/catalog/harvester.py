@@ -5,7 +5,6 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
@@ -17,7 +16,7 @@ from mediateca.catalog.jobs import create_job, finish_job, update_cursor
 from mediateca.catalog.parser import parse_detail, parse_search_results
 from mediateca.catalog.repository import (
     mark_absent_since,
-    save_snapshot,
+    select_pending_titns,
     upsert_edicion,
     upsert_stub,
 )
@@ -319,28 +318,12 @@ class Harvester:
         session: Session,
         *,
         client: OpacClient | None = None,
-        raw_dir: Path | None = None,
     ) -> None:
         self.session = session
         self.client = client or OpacClient()
-        self.raw_dir = raw_dir or settings.raw_dir
-        self.raw_dir.mkdir(parents=True, exist_ok=True)
 
-    def _snapshot_path(self, titn: str) -> Path:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        return self.raw_dir / f"{titn}-{stamp}.html"
-
-    def _save(self, parsed, html: str, final_url: str):
+    def _save(self, parsed):
         edicion = upsert_edicion(self.session, parsed)
-        path = self._snapshot_path(parsed.titn)
-        path.write_text(html, encoding="latin-1", errors="replace")
-        save_snapshot(
-            self.session,
-            edicion,
-            url=final_url,
-            html=html,
-            path=str(path),
-        )
         self.session.commit()
         return edicion
 
@@ -369,7 +352,7 @@ class Harvester:
                     try:
                         html, final_url = self.client.fetch_detail(item.url)
                         parsed = parse_detail(html, final_url)
-                        self._save(parsed, html, final_url)
+                        self._save(parsed)
                         processed += 1
                         logger.info("Ficha %s guardada (%s)", parsed.titn, parsed.titulo)
                     except Exception as exc:  # noqa: BLE001
@@ -390,6 +373,120 @@ class Harvester:
         except Exception as exc:  # noqa: BLE001
             run.status = "failed"
             run.error = str(exc)
+            raise
+        finally:
+            run.finished_at = datetime.now(UTC)
+            self.session.commit()
+
+    def _enrich_titn(self, titn: str, *, delay: float) -> None:
+        attempts = max(
+            1, int(getattr(self.client, "max_retries", settings.crawl_max_retries))
+        )
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                html, final_url = self.client.fetch_by_titn(titn)
+                parsed = parse_detail(html, final_url)
+                self._save(parsed)
+                return
+            except CaptchaRequired:
+                self.session.rollback()
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.session.rollback()
+                last_error = exc
+                wait = delay * (2**attempt)
+                logger.warning(
+                    "Error enriqueciendo %s (%s); reintento en %.1fs",
+                    titn,
+                    exc,
+                    wait,
+                )
+                if attempt + 1 < attempts:
+                    time.sleep(wait)
+        raise OpacError(f"No se pudo enriquecer la ficha {titn}") from last_error
+
+    def harvest_enrichment(
+        self,
+        *,
+        limit: int = 5000,
+        delay: float | None = None,
+        cursor_titn: str | None = None,
+        job: HarvestJob | None = None,
+    ) -> dict[str, int | list[str] | None]:
+        delay = self.client.delay if delay is None else delay
+        owns_job = job is None
+        if job is None:
+            job = create_job(
+                self.session,
+                "enrich",
+                batch_size=limit,
+                cursor_titn=cursor_titn,
+            )
+        else:
+            cursor_titn = cursor_titn if cursor_titn is not None else job.cursor_titn
+            limit = job.batch_size or limit
+        self.session.commit()
+
+        run = HarvestRun(kind="enrich", query=None, status="running")
+        self.session.add(run)
+        self.session.commit()
+
+        processed = errors = 0
+        failed: list[str] = []
+        last_titn = cursor_titn
+        pending: list[str] = []
+
+        try:
+            pending = select_pending_titns(
+                self.session, limit=limit, after_titn=cursor_titn
+            )
+            for titn in pending:
+                try:
+                    self._enrich_titn(titn, delay=delay)
+                except CaptchaRequired:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    errors += 1
+                    failed.append(titn)
+                    logger.exception("Ficha %s fallida tras reintentos: %s", titn, exc)
+                else:
+                    processed += 1
+                    logger.info("Ficha %s enriquecida", titn)
+
+                last_titn = titn
+                self.session.commit()
+                update_cursor(
+                    self.session,
+                    job,
+                    cursor_titn=last_titn,
+                    stats={
+                        "selected": len(pending),
+                        "processed": processed,
+                        "errors": errors,
+                        "failed": failed,
+                    },
+                )
+                self.session.commit()
+                time.sleep(delay)
+
+            stats = {
+                "selected": len(pending),
+                "processed": processed,
+                "errors": errors,
+                "failed": failed,
+                "cursor_titn": last_titn,
+            }
+            run.status = "finished"
+            run.stats = stats
+            if owns_job:
+                finish_job(self.session, job, status="completed", stats=stats)
+            return stats
+        except Exception as exc:  # noqa: BLE001
+            run.status = "failed"
+            run.error = str(exc)
+            if owns_job:
+                finish_job(self.session, job, status="failed", error=str(exc))
             raise
         finally:
             run.finished_at = datetime.now(UTC)

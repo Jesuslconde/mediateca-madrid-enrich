@@ -91,6 +91,21 @@ def discover_command(
         console.print(f"[green]{total} ediciones indexadas[/green]")
 
 
+@app.command("enrich")
+def enrich_command(
+    limit: int = typer.Option(
+        5000, "--limit", min=1, help="Fichas maximas por lote"
+    ),
+    delay: float = typer.Option(1.0, "--delay", min=0.1, help="Segundos entre peticiones"),
+) -> None:
+    """Enriquece por lotes las ediciones descubiertas y pendientes."""
+    configure_logging()
+    with session_scope() as session, OpacClient(delay=delay) as client:
+        harvester = Harvester(session, client=client)
+        stats = harvester.harvest_enrichment(limit=limit, delay=delay)
+    console.print(f"[green]Enriquecimiento terminado:[/green] {stats}")
+
+
 @app.command("index")
 def index_command(
     reset: bool = typer.Option(False, "--reset", help="Vaciar el indice antes de cargar"),
