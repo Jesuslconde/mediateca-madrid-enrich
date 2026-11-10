@@ -208,6 +208,8 @@ async def save_schedule_config(
             ),
             enrich_interval_hours=_form_int(values, "enrich_interval_hours", 12),
             enrich_batch_size=_form_int(values, "enrich_batch_size", 5000),
+            index_interval_hours=_form_int(values, "index_interval_hours", 168),
+            captcha_pause_minutes=_form_int(values, "captcha_pause_minutes", 30),
         )
         save_schedule_settings(session, schedule)
         session.commit()

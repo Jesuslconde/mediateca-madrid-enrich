@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from mediateca_shared.models import Edicion, HarvestJob
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from mediateca.catalog.harvester import CaptchaRequired
 from mediateca.catalog.jobs import (
+    _enrich_handler,
     claim_job,
     coverage,
     create_job,
@@ -21,6 +24,7 @@ from mediateca.catalog.jobs import (
     worker_tick,
 )
 from mediateca.core.db import Base
+from mediateca.core.scheduling import ScheduleSettings, save_schedule_settings
 
 
 def _session():
@@ -551,3 +555,79 @@ def test_descubrimiento_con_nuevos_encola_enriquecimiento(monkeypatch) -> None:
     assert enrich.status == "pending"
     assert "since" in enrich.stats
     assert enrich.stats["reason"] == "after_discover"
+
+
+def test_indexa_los_titn_procesados_si_el_lote_falla(monkeypatch) -> None:
+    import mediateca.catalog.harvester as harvester_module
+    import mediateca.catalog.indexer as indexer_module
+
+    session = _session()
+    job = create_job(session, "enrich", batch_size=10)
+    session.commit()
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class FakeHarvester:
+        processed_titns = ["1", "2"]
+
+        def __init__(self, session, client) -> None:
+            pass
+
+        def harvest_enrichment(self, *, job):  # noqa: ANN001
+            raise RuntimeError("captcha")
+
+    class FakeIndexer:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def index_titns(self, session, titns):  # noqa: ANN001
+            self.calls.append(list(titns))
+            return len(titns)
+
+    fake_indexer = FakeIndexer()
+    monkeypatch.setattr(harvester_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(harvester_module, "Harvester", FakeHarvester)
+    monkeypatch.setattr(indexer_module, "MeiliIndexer", lambda: fake_indexer)
+
+    with pytest.raises(RuntimeError):
+        _enrich_handler(session, job)
+
+    assert fake_indexer.calls == [["1", "2"]]
+
+
+def test_captcha_reencola_y_pausa_la_ingesta() -> None:
+    session = _session()
+    create_job(session, "enrich")
+    save_schedule_settings(
+        session,
+        ScheduleSettings(
+            True,
+            12,
+            168,
+            12,
+            5000,
+            index_interval_hours=168,
+            captcha_pause_minutes=15,
+        ),
+    )
+    session.commit()
+
+    def handler(session, job):  # noqa: ANN001, ANN202
+        raise CaptchaRequired("captcha")
+
+    processed, backoff = worker_tick(session, handlers={"enrich": handler})
+    session.commit()
+
+    assert processed is not None
+    assert processed.status == "pending"
+    assert processed.attempts == 0
+    assert processed.error == "captcha"
+    assert backoff == 900.0

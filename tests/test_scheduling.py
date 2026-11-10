@@ -267,3 +267,30 @@ def test_run_scheduler_una_iteracion() -> None:
     iterations = run_scheduler(factory, poll_seconds=1, max_iterations=1)
 
     assert iterations == 1
+
+
+def test_scheduler_encola_reconciliacion_del_indice() -> None:
+    session = _session()
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    _completed_discover(
+        session,
+        created_at=now - timedelta(hours=1),
+        mode="incremental",
+    )
+
+    jobs = enqueue_due_jobs(
+        session,
+        now=now,
+        settings=ScheduleSettings(
+            True,
+            12,
+            0,
+            12,
+            5000,
+            index_interval_hours=168,
+        ),
+    )
+    session.commit()
+
+    assert [job.job_type for job in jobs] == ["index"]
+    assert jobs[0].status == "pending"

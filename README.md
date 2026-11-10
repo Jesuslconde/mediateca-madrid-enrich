@@ -111,6 +111,7 @@ trabajos en `harvest_jobs`. Por defecto:
 - hace un barrido completo del catalogo cada 7 dias como red de seguridad;
 - encola el enriquecimiento de los nuevos registros despues de cada
   descubrimiento;
+- reconcilia el indice de Meilisearch una vez por semana;
 - evita duplicados si ya hay un trabajo activo del mismo tipo.
 
 Los intervalos, el tamano de lote, el barrido completo y la activacion se guardan
@@ -131,6 +132,11 @@ Variables relacionadas:
   si toca encolar.
 - `MEDIATECA_DASHBOARD_ADMIN_TOKEN`: token necesario para las acciones de
   escritura del dashboard. Si queda vacio, las acciones estan abiertas.
+
+La web publica consulta Meilisearch con el filtro `detail_complete=true`, por lo
+que solo muestra fichas enriquecidas. Si el OPAC devuelve un captcha y no se
+resuelve, el worker reencola el trabajo y pausa la ingesta durante los minutos
+configurados en el dashboard.
 
 ## Migraciones
 

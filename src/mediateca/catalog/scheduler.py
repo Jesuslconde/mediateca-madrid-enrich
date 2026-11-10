@@ -10,6 +10,7 @@ from mediateca.catalog.jobs import (
     JobAlreadyActive,
     enqueue_discover_job,
     enqueue_enrich_job,
+    enqueue_index_job,
 )
 from mediateca.catalog.repository import count_pending_titns
 from mediateca.core.logging import get_logger
@@ -103,6 +104,25 @@ def enqueue_due_jobs(
                         "pending": pending,
                     },
                 )
+
+    if (
+        not has_active_job(session, "discover")
+        and not has_active_job(session, "enrich")
+        and not has_active_job(session, "index")
+        and _is_due(
+            last_job(session, "index"), schedule.index_interval_hours, current
+        )
+    ):
+        try:
+            job = enqueue_index_job(session)
+        except JobAlreadyActive:
+            logger.info("Ya hay una indexacion activa; no se encola otra")
+        else:
+            enqueued.append(job)
+            logger.info(
+                "Indexacion de reconciliacion encolada por el scheduler",
+                extra={"job_id": job.id, "job_type": job.job_type},
+            )
 
     if enqueued:
         session.flush()

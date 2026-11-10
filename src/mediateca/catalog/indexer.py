@@ -28,6 +28,8 @@ FILTERABLE_ATTRIBUTES = [
     "bibliotecas",
     "edad_recomendada",
     "duracion_min",
+    "detail_complete",
+    "is_stub",
 ]
 
 SEARCHABLE_ATTRIBUTES = [
@@ -169,6 +171,7 @@ class MeiliIndexer:
                 "searchableAttributes": SEARCHABLE_ATTRIBUTES,
                 "sortableAttributes": SORTABLE_ATTRIBUTES,
                 "faceting": {"maxValuesPerFacet": 100},
+                "pagination": {"maxTotalHits": 100000},
                 "rankingRules": [
                     "words",
                     "typo",

@@ -460,6 +460,7 @@ class Harvester:
     ) -> None:
         self.session = session
         self.client = client or OpacClient()
+        self.processed_titns: list[str] = []
 
     def _save(self, parsed):
         edicion = upsert_edicion(self.session, parsed)
@@ -592,6 +593,7 @@ class Harvester:
         processed = errors = 0
         failed: list[str] = []
         processed_titns: list[str] = []
+        self.processed_titns = processed_titns
         last_titn = cursor_titn
         pending: list[str] = []
 
@@ -718,6 +720,7 @@ class Harvester:
         self.session.commit()
 
         seen: set[str] = set()
+        self.processed_titns = []
         processed = pages = errors = missing = 0
         resume_titn = cursor_titn if cursor_doc is not None else None
         first_page = True
@@ -771,6 +774,7 @@ class Harvester:
                         continue
 
                     processed += 1
+                    self.processed_titns.append(parsed.titn)
                     seen.add(parsed.titn)
                     last_titn = parsed.titn
                     if parsed.doc is not None:

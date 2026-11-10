@@ -590,13 +590,32 @@ def _enqueue_enrich_after_discover(
         )
 
 
+def _index_processed_after_failure(
+    session: Session, job: HarvestJob, titns: list[str]
+) -> None:
+    if not titns:
+        return
+    try:
+        _index_titns_for_job(session, job, titns)
+    except Exception:  # noqa: BLE001
+        session.rollback()
+        logger.exception(
+            "No se pudieron indexar las fichas procesadas antes del fallo",
+            extra={"job_id": job.id, "job_type": job.job_type},
+        )
+
+
 def _discover_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.harvester import Harvester, OpacClient
 
     _flush_pending_index(session, job)
     with OpacClient(flaresolverr_url=effective_flaresolverr_url(session)) as client:
         harvester = Harvester(session, client=client)
-        stats = harvester.harvest_discovery(job=job)
+        try:
+            stats = harvester.harvest_discovery(job=job)
+        except Exception:
+            _index_processed_after_failure(session, job, harvester.processed_titns)
+            raise
     _index_titns_for_job(session, job, stats.get("processed_titns", []))
     _enqueue_enrich_after_discover(session, job, stats)
     return stats
@@ -608,7 +627,11 @@ def _enrich_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     _flush_pending_index(session, job)
     with OpacClient(flaresolverr_url=effective_flaresolverr_url(session)) as client:
         harvester = Harvester(session, client=client)
-        stats = harvester.harvest_enrichment(job=job)
+        try:
+            stats = harvester.harvest_enrichment(job=job)
+        except Exception:
+            _index_processed_after_failure(session, job, harvester.processed_titns)
+            raise
     _index_titns_for_job(session, job, stats.get("processed_titns", []))
     return stats
 
@@ -667,6 +690,12 @@ def _heartbeat_loop(
             continue
 
 
+def _is_captcha_error(exc: Exception) -> bool:
+    from mediateca.catalog.harvester import CaptchaRequired
+
+    return isinstance(exc, CaptchaRequired)
+
+
 def worker_tick(
     session: Session,
     *,
@@ -723,6 +752,25 @@ def worker_tick(
         if failed_job is None:
             return None, 0.0
         duration_ms = round((time.monotonic() - started_monotonic) * 1000, 2)
+        if _is_captcha_error(exc):
+            failed_job.attempts = max(0, (failed_job.attempts or 1) - 1)
+            requeue_job(session, failed_job, error=str(exc))
+            session.commit()
+            pause_minutes = max(
+                1, load_schedule_settings(session).captcha_pause_minutes
+            )
+            logger.warning(
+                "Captcha detectado; pausando la ingesta",
+                extra={
+                    "job_id": failed_job.id,
+                    "job_type": failed_job.job_type,
+                    "result": "paused",
+                    "duration_ms": duration_ms,
+                    "pause_minutes": pause_minutes,
+                    "error": str(exc),
+                },
+            )
+            return failed_job, float(pause_minutes * 60)
         if (failed_job.attempts or 0) >= (failed_job.max_attempts or 1):
             finish_job(session, failed_job, status="failed", error=str(exc))
             session.commit()

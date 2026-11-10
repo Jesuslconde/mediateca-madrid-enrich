@@ -95,6 +95,12 @@
             <span class="muted">Ultima: {{ schedule_status.enrich.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.enrich.last_run else 'nunca' }}</span>
             <span class="muted">Proxima: {{ schedule_status.enrich.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.enrich.next_run else '—' }}</span>
           </div>
+          <div class="metric">
+            <span class="muted">Reconciliacion del indice</span>
+            <strong>{{ 'cada ' ~ schedule.index_interval_hours ~ ' h' }}</strong>
+            <span class="muted">Ultima: {{ schedule_status.index.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.index.last_run else 'nunca' }}</span>
+            <span class="muted">Proxima: {{ schedule_status.index.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.index.next_run else '—' }}</span>
+          </div>
         </div>
         {% if is_admin %}
           <form method="post" action="/config/schedule">
@@ -103,6 +109,8 @@
             <label>Barrido completo cada <input type="number" name="full_sweep_interval_hours" value="{{ schedule.full_sweep_interval_hours }}" min="0" max="8760"> h</label>
             <label>Enriquecimiento cada <input type="number" name="enrich_interval_hours" value="{{ schedule.enrich_interval_hours }}" min="1" max="720"> h</label>
             <label>Lote de <input type="number" name="enrich_batch_size" value="{{ schedule.enrich_batch_size }}" min="1" max="50000"> fichas</label>
+            <label>Indexacion cada <input type="number" name="index_interval_hours" value="{{ schedule.index_interval_hours }}" min="1" max="8760"> h</label>
+            <label>Pausa tras captcha <input type="number" name="captcha_pause_minutes" value="{{ schedule.captcha_pause_minutes }}" min="1" max="1440"> min</label>
             <button type="submit">Guardar programacion</button>
           </form>
         {% else %}

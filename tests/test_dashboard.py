@@ -533,6 +533,8 @@ def test_post_programacion_guarda_los_intervalos(monkeypatch, tmp_path) -> None:
                 "full_sweep_interval_hours": "0",
                 "enrich_interval_hours": "24",
                 "enrich_batch_size": "1000",
+                "index_interval_hours": "48",
+                "captcha_pause_minutes": "15",
             },
             follow_redirects=False,
         )
@@ -546,6 +548,8 @@ def test_post_programacion_guarda_los_intervalos(monkeypatch, tmp_path) -> None:
     assert schedule.full_sweep_interval_hours == 0
     assert schedule.enrich_interval_hours == 24
     assert schedule.enrich_batch_size == 1000
+    assert schedule.index_interval_hours == 48
+    assert schedule.captcha_pause_minutes == 15
 
 
 def test_post_job_encola_descubrimiento(monkeypatch, tmp_path) -> None:

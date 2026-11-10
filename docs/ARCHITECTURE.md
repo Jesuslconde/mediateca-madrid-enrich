@@ -88,7 +88,14 @@ intactos.
 
 Cada documento incluye `detail_complete` e `is_stub`. Una edicion descubierta pero
 sin `detail_fetched_at` se indexa como stub con `detail_complete=false`; al
-enriquecerse se actualiza con `detail_complete=true` y los nuevos campos.
+enriquecerse se actualiza con `detail_complete=true` y los nuevos campos. Ambos
+campos son filtrables. La API publica del portal aplica siempre
+`detail_complete = true`, de modo que la web solo muestra fichas enriquecidas.
+
+Si un lote falla antes de terminar, el worker indexa igualmente los `TITN` que ya
+habia procesado. Ademas, el scheduler encola una reindexacion de reconciliacion
+cada `index_interval_hours` (168 por defecto) para reparar cualquier divergencia
+entre PostgreSQL y Meilisearch.
 
 Si Meilisearch falla al terminar un lote, los `TITN` pendientes se guardan en
 `harvest_jobs.stats.pending_index_titns`. El reintento del trabajo los indexa antes
@@ -141,6 +148,10 @@ El descubrimiento incremental reutiliza el `cursor_doc` y `cursor_titn` del ulti
 descubrimiento completado. El barrido completo semanal corrige posibles cambios
 de orden del catalogo. Los jobs guardan `stats.mode` (`full` o `incremental`) y
 `stats.reason`.
+
+Si el OPAC devuelve un captcha que no se resuelve, el worker no consume el intento:
+reencola el trabajo y pausa la ingesta `captcha_pause_minutes` minutos (30 por
+defecto, configurable desde el dashboard).
 
 Cuando un descubrimiento termina con nuevos registros, el worker encola
 automaticamente un `enrich` con `stats.since = started_at` del descubrimiento.

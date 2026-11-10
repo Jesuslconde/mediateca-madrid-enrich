@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from mediateca.catalog.indexer import MeiliIndexer, build_document
+from mediateca.catalog.indexer import FILTERABLE_ATTRIBUTES, MeiliIndexer, build_document
 from mediateca.catalog.jobs import create_stub
 from mediateca.catalog.parser import parse_file
 from mediateca.catalog.repository import upsert_edicion
@@ -103,3 +103,8 @@ def test_index_titns_envia_lotes_de_200() -> None:
 
     assert total == 201
     assert [len(batch) for batch in index.batches] == [200, 1]
+
+
+def test_detail_complete_es_un_atributo_filtrable() -> None:
+    assert "detail_complete" in FILTERABLE_ATTRIBUTES
+    assert "is_stub" in FILTERABLE_ATTRIBUTES

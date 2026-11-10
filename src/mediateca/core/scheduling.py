@@ -18,12 +18,16 @@ DISCOVER_INTERVAL_HOURS_KEY = "discover_interval_hours"
 FULL_SWEEP_INTERVAL_HOURS_KEY = "full_sweep_interval_hours"
 ENRICH_INTERVAL_HOURS_KEY = "enrich_interval_hours"
 ENRICH_BATCH_SIZE_KEY = "enrich_batch_size"
+INDEX_INTERVAL_HOURS_KEY = "index_interval_hours"
+CAPTCHA_PAUSE_MINUTES_KEY = "captcha_pause_minutes"
 
 MIN_INTERVAL_HOURS = 1
 MAX_INTERVAL_HOURS = 24 * 30
 MAX_FULL_SWEEP_HOURS = 24 * 365
 MIN_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 50000
+MIN_CAPTCHA_PAUSE_MINUTES = 1
+MAX_CAPTCHA_PAUSE_MINUTES = 24 * 60
 
 
 class ScheduleValidationError(ValueError):
@@ -37,6 +41,8 @@ class ScheduleSettings:
     full_sweep_interval_hours: int
     enrich_interval_hours: int
     enrich_batch_size: int
+    index_interval_hours: int = 168
+    captcha_pause_minutes: int = 30
 
 
 @dataclass(slots=True)
@@ -51,6 +57,7 @@ class ScheduleStatus:
     discover: ScheduledTaskStatus
     full_sweep: ScheduledTaskStatus
     enrich: ScheduledTaskStatus
+    index: ScheduledTaskStatus
 
 
 def default_schedule_settings() -> ScheduleSettings:
@@ -60,6 +67,8 @@ def default_schedule_settings() -> ScheduleSettings:
         full_sweep_interval_hours=168,
         enrich_interval_hours=12,
         enrich_batch_size=5000,
+        index_interval_hours=168,
+        captcha_pause_minutes=30,
     )
 
 
@@ -110,6 +119,18 @@ def load_schedule_settings(session: Session) -> ScheduleSettings:
             MIN_BATCH_SIZE,
             MAX_BATCH_SIZE,
         ),
+        index_interval_hours=_parse_int(
+            get_config_value(session, INDEX_INTERVAL_HOURS_KEY),
+            defaults.index_interval_hours,
+            MIN_INTERVAL_HOURS,
+            MAX_FULL_SWEEP_HOURS,
+        ),
+        captcha_pause_minutes=_parse_int(
+            get_config_value(session, CAPTCHA_PAUSE_MINUTES_KEY),
+            defaults.captcha_pause_minutes,
+            MIN_CAPTCHA_PAUSE_MINUTES,
+            MAX_CAPTCHA_PAUSE_MINUTES,
+        ),
     )
 
 
@@ -132,6 +153,20 @@ def validate_schedule_settings(settings_to_save: ScheduleSettings) -> None:
         raise ScheduleValidationError(
             f"El lote de enriquecimiento debe estar entre {MIN_BATCH_SIZE} y "
             f"{MAX_BATCH_SIZE}"
+        )
+    if not MIN_INTERVAL_HOURS <= settings_to_save.index_interval_hours <= MAX_FULL_SWEEP_HOURS:
+        raise ScheduleValidationError(
+            f"El intervalo de indexacion debe estar entre {MIN_INTERVAL_HOURS} y "
+            f"{MAX_FULL_SWEEP_HOURS} horas"
+        )
+    if not (
+        MIN_CAPTCHA_PAUSE_MINUTES
+        <= settings_to_save.captcha_pause_minutes
+        <= MAX_CAPTCHA_PAUSE_MINUTES
+    ):
+        raise ScheduleValidationError(
+            f"La pausa por captcha debe estar entre {MIN_CAPTCHA_PAUSE_MINUTES} y "
+            f"{MAX_CAPTCHA_PAUSE_MINUTES} minutos"
         )
 
 
@@ -161,6 +196,16 @@ def save_schedule_settings(session: Session, settings_to_save: ScheduleSettings)
         session,
         ENRICH_BATCH_SIZE_KEY,
         str(settings_to_save.enrich_batch_size),
+    )
+    set_config_value(
+        session,
+        INDEX_INTERVAL_HOURS_KEY,
+        str(settings_to_save.index_interval_hours),
+    )
+    set_config_value(
+        session,
+        CAPTCHA_PAUSE_MINUTES_KEY,
+        str(settings_to_save.captcha_pause_minutes),
     )
     session.flush()
 
@@ -231,6 +276,7 @@ def build_schedule_status(
     last_discover = last_job(session, "discover")
     last_full = last_full_discover(session)
     last_enrich = last_job(session, "enrich")
+    last_index = last_job(session, "index")
 
     discover_next = _next_run(last_discover, schedule.discover_interval_hours)
     if discover_next is None and schedule.enabled:
@@ -241,6 +287,9 @@ def build_schedule_status(
     enrich_next = _next_run(last_enrich, schedule.enrich_interval_hours)
     if enrich_next is None and schedule.enabled:
         enrich_next = current
+    index_next = _next_run(last_index, schedule.index_interval_hours)
+    if index_next is None and schedule.enabled:
+        index_next = current
 
     def task(
         job: HarvestJob | None, next_run: datetime | None, job_type: str
@@ -255,4 +304,5 @@ def build_schedule_status(
         discover=task(last_discover, discover_next, "discover"),
         full_sweep=task(last_full, full_next, "discover"),
         enrich=task(last_enrich, enrich_next, "enrich"),
+        index=task(last_index, index_next, "index"),
     )
