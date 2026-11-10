@@ -25,6 +25,7 @@ from mediateca.catalog.jobs import (
 )
 from mediateca.catalog.parser import parse_file
 from mediateca.core.config import settings
+from mediateca.core.config_store import effective_flaresolverr_url
 from mediateca.core.db import get_session_factory, init_db, session_scope
 from mediateca.core.logging import configure_logging, get_logger
 
@@ -59,7 +60,9 @@ def harvest_command(
 ) -> None:
     """Recolecta fichas del OPAC y las guarda en PostgreSQL."""
     configure_logging()
-    with session_scope() as session, OpacClient(delay=delay) as client:
+    with session_scope() as session, OpacClient(
+        delay=delay, flaresolverr_url=effective_flaresolverr_url(session)
+    ) as client:
         harvester = Harvester(session, client=client)
         stats = harvester.harvest_query(
             query, max_pages=max_pages, limit=limit, delay=delay
@@ -82,7 +85,9 @@ def discover_command(
 ) -> None:
     """Descubre el catalogo completo y crea ediciones stub."""
     configure_logging()
-    with session_scope() as session, OpacClient(delay=delay) as client:
+    with session_scope() as session, OpacClient(
+        delay=delay, flaresolverr_url=effective_flaresolverr_url(session)
+    ) as client:
         harvester = Harvester(session, client=client)
         stats = harvester.harvest_discovery(
             max_pages=max_pages, limit=limit, delay=delay
@@ -106,7 +111,9 @@ def enrich_command(
 ) -> None:
     """Enriquece por lotes las ediciones descubiertas y pendientes."""
     configure_logging()
-    with session_scope() as session, OpacClient(delay=delay) as client:
+    with session_scope() as session, OpacClient(
+        delay=delay, flaresolverr_url=effective_flaresolverr_url(session)
+    ) as client:
         harvester = Harvester(session, client=client)
         stats = harvester.harvest_enrichment(limit=limit, delay=delay)
     console.print(f"[green]Enriquecimiento terminado:[/green] {stats}")
@@ -239,6 +246,8 @@ def ingest_status_command(
     summary.add_row("Procesadas", str(metrics.processed))
     summary.add_row("Errores", str(metrics.errors))
     summary.add_row("Captchas", str(metrics.captchas))
+    summary.add_row("Captchas resueltos", str(metrics.captchas_solved))
+    summary.add_row("Captchas fallidos", str(metrics.captchas_failed))
     summary.add_row("Renovaciones de sesion", str(metrics.session_renewals))
     summary.add_row(
         "Tiempo medio por ficha",
@@ -319,7 +328,9 @@ def _run_harvest_job() -> None:
     logger.info("Iniciando recoleccion programada")
     try:
         for query in settings.queries:
-            with session_scope() as session, OpacClient() as client:
+            with session_scope() as session, OpacClient(
+                flaresolverr_url=effective_flaresolverr_url(session)
+            ) as client:
                 harvester = Harvester(session, client=client)
                 stats = harvester.harvest_query(query, max_pages=2)
                 logger.info("Recoleccion %s: %s", query, stats)

@@ -412,3 +412,43 @@ def test_titn_pendientes_de_indexar_se_reintentan(monkeypatch) -> None:
     assert "pending_index_titns" not in second.stats
     assert fake_indexer.calls[0] == ["1", "2"]
     assert backoff == 0.0
+
+
+def test_worker_usa_la_url_de_flaresolverr_persistida(monkeypatch) -> None:
+    import mediateca.catalog.harvester as harvester_module
+    from mediateca.core.config_store import FLARESOLVERR_URL_KEY, set_config_value
+
+    session = _session()
+    set_config_value(session, FLARESOLVERR_URL_KEY, "http://db:8191")
+    create_job(session, "discover")
+    session.commit()
+
+    capturado: dict = {}
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            capturado.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class FakeHarvester:
+        def __init__(self, session, client) -> None:
+            pass
+
+        def harvest_discovery(self, *, job):  # noqa: ANN001
+            return {"processed": 0}
+
+    monkeypatch.setattr(harvester_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(harvester_module, "Harvester", FakeHarvester)
+
+    processed, backoff = worker_tick(session)
+    session.commit()
+
+    assert processed is not None
+    assert processed.status == "completed"
+    assert capturado["flaresolverr_url"] == "http://db:8191"
+    assert backoff == 0.0

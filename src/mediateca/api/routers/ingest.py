@@ -58,6 +58,8 @@ def _metrics_out(metrics: IngestMetrics) -> IngestMetricsOut:
         processed=metrics.processed,
         errors=metrics.errors,
         captchas=metrics.captchas,
+        captchas_solved=metrics.captchas_solved,
+        captchas_failed=metrics.captchas_failed,
         session_renewals=metrics.session_renewals,
         failed=metrics.failed,
         pending=metrics.pending,

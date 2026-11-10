@@ -20,10 +20,17 @@ from mediateca.catalog.jobs import (
     mark_enriched,
 )
 from mediateca.core.config import Settings, settings
+from mediateca.core.config_store import (
+    FLARESOLVERR_URL_KEY,
+    get_config_value,
+    set_config_value,
+)
 from mediateca.core.db import Base
+from mediateca.core.models import AppConfig  # noqa: F401  (registra la tabla)
 from mediateca.dashboard.queries import (
     catalog_coverage,
     enrichment_percentage,
+    flaresolverr_config,
     job_status_counts,
     job_type_counts,
     recent_jobs,
@@ -307,3 +314,164 @@ def test_vista_es_de_solo_lectura(monkeypatch, tmp_path) -> None:
 
     assert session.scalar(select(func.count(HarvestJob.id))) == before_jobs
     assert session.scalar(select(func.count(Edicion.id))) == before_ediciones
+
+
+def test_flaresolverr_config_respeta_la_precedencia(monkeypatch) -> None:
+    session = _session()
+    monkeypatch.setattr(settings, "flaresolverr_url", None)
+
+    vacia = flaresolverr_config(session)
+    assert vacia.source == "ninguno"
+    assert vacia.active is False
+
+    monkeypatch.setattr(settings, "flaresolverr_url", "http://env:8191/")
+    desde_entorno = flaresolverr_config(session)
+    assert desde_entorno.source == "entorno"
+    assert desde_entorno.effective_url == "http://env:8191"
+    assert desde_entorno.active is True
+
+    set_config_value(session, FLARESOLVERR_URL_KEY, "http://db:8191/")
+    session.commit()
+    desde_dashboard = flaresolverr_config(session)
+    assert desde_dashboard.source == "dashboard"
+    assert desde_dashboard.saved_url == "http://db:8191"
+    assert desde_dashboard.effective_url == "http://db:8191"
+    assert desde_dashboard.active is True
+
+    set_config_value(session, FLARESOLVERR_URL_KEY, "ftp://invalido")
+    session.commit()
+    invalida = flaresolverr_config(session)
+    assert invalida.source == "entorno"
+    assert invalida.effective_url == "http://env:8191"
+
+
+def test_dashboard_muestra_configuracion_y_metricas(monkeypatch, tmp_path) -> None:
+    session = _session()
+    set_config_value(session, FLARESOLVERR_URL_KEY, "http://db:8191")
+    job = create_job(session, "enrich")
+    finish_job(
+        session,
+        job,
+        status="completed",
+        stats={
+            "processed": 3,
+            "errors": 0,
+            "captchas": 3,
+            "captchas_solved": 2,
+            "captchas_failed": 1,
+            "session_renewals": 1,
+        },
+    )
+    session.commit()
+
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    client = _client_for(session)
+    try:
+        response = client.get("/")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'action="/config/flaresolverr"' in html
+    assert 'value="http://db:8191"' in html
+    assert "activa" in html
+    assert "dashboard" in html
+    assert "Captchas resueltos" in html
+    assert "Captchas fallidos" in html
+    assert ">2</strong>" in html
+    assert ">1</strong>" in html
+
+
+def test_post_guarda_la_url_de_flaresolverr(monkeypatch, tmp_path) -> None:
+    session = _session()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    client = _client_for(session)
+    try:
+        response = client.post(
+            "/config/flaresolverr",
+            data={"url": " http://flare:8191/ "},
+            follow_redirects=False,
+        )
+        guardada = get_config_value(session, FLARESOLVERR_URL_KEY)
+        dashboard = client.get("/")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 303
+    assert guardada == "http://flare:8191"
+    assert 'value="http://flare:8191"' in dashboard.text
+
+
+def test_post_limpia_la_url_y_usa_el_entorno(monkeypatch, tmp_path) -> None:
+    session = _session()
+    set_config_value(session, FLARESOLVERR_URL_KEY, "http://db:8191")
+    session.commit()
+    monkeypatch.setattr(settings, "flaresolverr_url", "http://env:8191")
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+
+    client = _client_for(session)
+    try:
+        response = client.post(
+            "/config/flaresolverr",
+            data={"url": ""},
+            follow_redirects=False,
+        )
+        guardada = get_config_value(session, FLARESOLVERR_URL_KEY)
+        dashboard = client.get("/")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 303
+    assert guardada is None
+    assert "Origen: entorno" in dashboard.text
+    assert "http://env:8191" in dashboard.text
+
+
+def test_post_url_invalida_no_modifica_la_configuracion(monkeypatch, tmp_path) -> None:
+    session = _session()
+    set_config_value(session, FLARESOLVERR_URL_KEY, "http://db:8191")
+    session.commit()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+
+    client = _client_for(session)
+    try:
+        response = client.post(
+            "/config/flaresolverr",
+            data={"url": "ftp://invalido"},
+            follow_redirects=False,
+        )
+        guardada = get_config_value(session, FLARESOLVERR_URL_KEY)
+        error_page = client.get(response.headers["location"])
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 303
+    assert guardada == "http://db:8191"
+    assert "debe usar http o https" in error_page.text
+
+
+def test_post_error_de_base_de_datos_muestra_mensaje(
+    monkeypatch, tmp_path
+) -> None:
+    session = _session()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+
+    def fallo(*args, **kwargs):
+        raise OperationalError("INSERT", {}, Exception("db down"))
+
+    monkeypatch.setattr(dashboard_module, "set_config_value", fallo)
+
+    client = _client_for(session)
+    try:
+        response = client.post(
+            "/config/flaresolverr",
+            data={"url": "http://flare:8191"},
+            follow_redirects=False,
+        )
+        error_page = client.get(response.headers["location"])
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 303
+    assert "No se pudo guardar la configuracion de FlareSolverr" in error_page.text

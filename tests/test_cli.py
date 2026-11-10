@@ -113,3 +113,48 @@ def test_cli_incluye_el_comando_dashboard() -> None:
 
     assert result.exit_code == 0
     assert "dashboard" in result.output
+
+
+def test_cli_discover_usa_la_url_de_flaresolverr(monkeypatch) -> None:
+    from mediateca.core.config_store import FLARESOLVERR_URL_KEY, set_config_value
+
+    session = _session()
+    set_config_value(session, FLARESOLVERR_URL_KEY, "http://db:8191")
+    session.commit()
+
+    capturado: dict = {}
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            capturado.update(kwargs)
+            self.delay = 0.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+        def search_all(
+            self,
+            query: str,
+            *,
+            max_pages: int | None = None,
+            start_doc: int | None = None,
+        ):
+            yield SearchPage(query=query, total=0, items=[], html="<html></html>")
+
+    @contextmanager
+    def fake_session_scope():
+        yield session
+        session.commit()
+
+    monkeypatch.setattr(cli_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(cli_module, "session_scope", fake_session_scope)
+
+    result = CliRunner().invoke(
+        cli_module.app, ["discover", "--max-pages", "1", "--delay", "0.1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert capturado["flaresolverr_url"] == "http://db:8191"

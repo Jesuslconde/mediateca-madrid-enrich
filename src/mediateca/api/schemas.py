@@ -39,6 +39,8 @@ class IngestMetricsOut(BaseModel):
     processed: int
     errors: int
     captchas: int
+    captchas_solved: int
+    captchas_failed: int
     session_renewals: int
     failed: int
     pending: int

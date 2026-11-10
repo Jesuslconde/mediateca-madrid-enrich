@@ -19,6 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from mediateca.core.config import settings
+from mediateca.core.config_store import effective_flaresolverr_url
 from mediateca.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,6 +43,8 @@ class IngestMetrics:
     processed: int
     errors: int
     captchas: int
+    captchas_solved: int
+    captchas_failed: int
     session_renewals: int
     failed: int
     pending: int
@@ -280,7 +283,8 @@ def ingest_metrics(
     session: Session, cover: IngestCoverage | None = None
 ) -> IngestMetrics:
     cover = cover or coverage(session)
-    processed = errors = captchas = session_renewals = failed = 0
+    processed = errors = captchas = captchas_solved = captchas_failed = 0
+    session_renewals = failed = 0
     total_ms = 0.0
     timed_processed = 0
 
@@ -290,6 +294,8 @@ def ingest_metrics(
         processed += job_processed
         errors += int(stats.get("errors", 0) or 0)
         captchas += int(stats.get("captchas", 0) or 0)
+        captchas_solved += int(stats.get("captchas_solved", 0) or 0)
+        captchas_failed += int(stats.get("captchas_failed", 0) or 0)
         session_renewals += int(stats.get("session_renewals", 0) or 0)
         failed += len(stats.get("failed") or [])
         if job_processed > 0 and job.started_at and job.finished_at:
@@ -304,6 +310,8 @@ def ingest_metrics(
         processed=processed,
         errors=errors,
         captchas=captchas,
+        captchas_solved=captchas_solved,
+        captchas_failed=captchas_failed,
         session_renewals=session_renewals,
         failed=failed,
         pending=cover.pendientes,
@@ -407,7 +415,7 @@ def _discover_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.harvester import Harvester, OpacClient
 
     _flush_pending_index(session, job)
-    with OpacClient() as client:
+    with OpacClient(flaresolverr_url=effective_flaresolverr_url(session)) as client:
         harvester = Harvester(session, client=client)
         stats = harvester.harvest_discovery(job=job)
     _index_titns_for_job(session, job, stats.get("processed_titns", []))
@@ -418,7 +426,7 @@ def _enrich_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.harvester import Harvester, OpacClient
 
     _flush_pending_index(session, job)
-    with OpacClient() as client:
+    with OpacClient(flaresolverr_url=effective_flaresolverr_url(session)) as client:
         harvester = Harvester(session, client=client)
         stats = harvester.harvest_enrichment(job=job)
     _index_titns_for_job(session, job, stats.get("processed_titns", []))

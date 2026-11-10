@@ -96,6 +96,35 @@ de continuar con el siguiente lote. La reindexacion completa con
 `index_editions(reset=True)` queda reservada al comando manual
 `mediateca index --reset`, para cambios de esquema o reparaciones.
 
+## Resolucion de captchas con FlareSolverr
+
+La resolucion de captchas es opcional y esta desactivada por defecto. El cliente
+del OPAC usa `httpx` como transporte normal y solo invoca a FlareSolverr cuando
+detecta la pagina de reCAPTCHA y existe una URL efectiva configurada. La URL se
+resuelve al crear cada cliente del OPAC y puede venir de la tabla `app_config`
+(configuracion del dashboard) o de `MEDIATECA_FLARESOLVERR_URL`.
+
+La configuracion persistida se guarda en `app_config`:
+
+- `key`: nombre del ajuste, por ejemplo `flaresolverr_url`.
+- `value`: valor en texto.
+- `updated_at`: fecha de la ultima actualizacion.
+
+`MEDIATECA_FLARESOLVERR_MAX_TIMEOUT_MS` controla el campo `maxTimeout` de la API de
+FlareSolverr, en milisegundos. Por defecto es `60000`.
+
+El cliente usa la API v1 de FlareSolverr mediante `POST {url}/v1` con
+`cmd=request.get` o `cmd=request.post`. Para POST envia el formulario en `postData`
+codificado como `application/x-www-form-urlencoded`; para GET incorpora los
+parametros a la URL. Una respuesta valida tiene `status=ok` y
+`solution.response`; de ella se usan el estado HTTP, la URL final, el HTML, las
+cookies y el `userAgent`. Se asume una version de FlareSolverr con esta API v1.
+
+FlareSolverr se invoca solo cuando la pagina del OPAC contiene el reCAPTCHA. Si no
+hay URL, el servicio no responde o la respuesta sigue siendo un captcha, el
+recolector registra el fallo y el trabajo se reprograma con el backoff existente,
+sin reintentar la resolucion dentro de la misma peticion.
+
 ## Observabilidad de la ingesta
 
 El dashboard sirve tambien la API de observabilidad, siempre de solo lectura:
@@ -105,8 +134,9 @@ El dashboard sirve tambien la API de observabilidad, siempre de solo lectura:
 
 La cobertura incluye ediciones descubiertas, enriquecidas, pendientes, fallidas y
 desaparecidas, ademas del porcentaje de enriquecimiento. Las metricas agregan
-fichas procesadas, errores, captchas, renovaciones de sesion y tiempo medio por
-ficha a partir de `harvest_jobs.stats`. El estado del worker usa el fichero de
+fichas procesadas, errores, captchas detectados, captchas resueltos, captchas
+fallidos, renovaciones de sesion y tiempo medio por ficha a partir de
+`harvest_jobs.stats`. El estado del worker usa el fichero de
 heartbeat y, como respaldo, el `heartbeat_at` de la base de datos; se marca
 `degraded` tras 120 segundos sin senal.
 

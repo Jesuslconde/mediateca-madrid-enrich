@@ -12,6 +12,11 @@ from bs4 import BeautifulSoup
 from mediateca_shared.models import HarvestJob, HarvestRun
 from sqlalchemy.orm import Session
 
+from mediateca.catalog.flaresolverr import (
+    FlareSolverrClient,
+    FlareSolverrCookie,
+    FlareSolverrError,
+)
 from mediateca.catalog.jobs import create_job, finish_job, update_cursor
 from mediateca.catalog.parser import parse_detail, parse_search_results
 from mediateca.catalog.repository import (
@@ -70,6 +75,9 @@ class OpacClient:
         delay: float | None = None,
         max_retries: int | None = None,
         user_agent: str | None = None,
+        flaresolverr_url: str | None = None,
+        flaresolverr_max_timeout_ms: int | None = None,
+        flaresolverr_client: FlareSolverrClient | None = None,
     ) -> None:
         self.base_url = (base_url or settings.opac_base_url).rstrip("/")
         self.path = path or settings.opac_path
@@ -87,10 +95,32 @@ class OpacClient:
         )
         self.session_id: str | None = None
         self.captchas = 0
+        self.captchas_solved = 0
+        self.captchas_failed = 0
         self.session_renewals = 0
+        self.flaresolverr_url = (flaresolverr_url or settings.flaresolverr_url) or None
+        self.flaresolverr_max_timeout_ms = (
+            flaresolverr_max_timeout_ms
+            if flaresolverr_max_timeout_ms is not None
+            else settings.flaresolverr_max_timeout_ms
+        )
+        self.flaresolverr_client = flaresolverr_client
+        self._flaresolverr: FlareSolverrClient | None = flaresolverr_client
 
     def close(self) -> None:
         self.client.close()
+        if self._flaresolverr is not None and self._flaresolverr is not self.flaresolverr_client:
+            self._flaresolverr.close()
+
+    def _get_flaresolverr(self) -> FlareSolverrClient | None:
+        if not self.flaresolverr_url:
+            return None
+        if self._flaresolverr is None:
+            self._flaresolverr = FlareSolverrClient(
+                self.flaresolverr_url,
+                max_timeout_ms=self.flaresolverr_max_timeout_ms,
+            )
+        return self._flaresolverr
 
     def __enter__(self) -> OpacClient:
         return self
@@ -142,10 +172,13 @@ class OpacClient:
             return url
         return SESSION_RE.sub(f"/abnetopac/{self.session_id}", url, count=1)
 
-    def _check_response(self, response: httpx.Response) -> None:
+    def _check_response(
+        self, response: httpx.Response, *, count_captcha: bool = True
+    ) -> None:
         text = response.text
         if "No soy un robot" in text or "chequeado 'No soy un robot'" in text:
-            self.captchas += 1
+            if count_captcha:
+                self.captchas += 1
             raise CaptchaRequired(
                 "El OPAC ha solicitado un reCAPTCHA; se detiene la recoleccion"
             )
@@ -171,7 +204,32 @@ class OpacClient:
                 last_error = None
                 continue
             except CaptchaRequired:
-                raise
+                if not self.flaresolverr_url:
+                    self.captchas_failed += 1
+                    raise
+                try:
+                    return self._solve_captcha(method, url, kwargs)
+                except SessionExpired:
+                    if not recover_session:
+                        raise
+                    logger.info(
+                        "Sesion caducada durante la resolucion del captcha; renovando"
+                    )
+                    self.open_session()
+                    url = self._rebind_session(url)
+                    last_error = None
+                    continue
+                except CaptchaRequired:
+                    raise
+                except (httpx.HTTPError, OpacError) as exc:
+                    last_error = exc
+                    wait = self.delay * (2**attempt)
+                    logger.warning(
+                        "Error tras resolver el captcha (%s); reintento en %.1fs",
+                        exc,
+                        wait,
+                    )
+                    time.sleep(wait)
             except (httpx.HTTPError, OpacError) as exc:
                 last_error = exc
                 wait = self.delay * (2**attempt)
@@ -179,6 +237,72 @@ class OpacClient:
                 time.sleep(wait)
 
         raise OpacError(f"No se pudo completar la peticion a {url}") from last_error
+
+    def _solve_captcha(
+        self, method: str, url: str, kwargs: dict
+    ) -> httpx.Response:
+        solver = self._get_flaresolverr()
+        if solver is None:
+            raise CaptchaRequired(
+                "El OPAC ha solicitado un reCAPTCHA y no hay FlareSolverr configurado"
+            )
+
+        cookies = [
+            FlareSolverrCookie(
+                name=cookie.name,
+                value=cookie.value,
+                domain=cookie.domain,
+                path=cookie.path,
+            )
+            for cookie in self.client.cookies.jar
+        ]
+
+        try:
+            solved = solver.request(
+                method,
+                url,
+                params=kwargs.get("params"),
+                data=kwargs.get("data"),
+                cookies=cookies,
+            )
+        except FlareSolverrError as exc:
+            self.captchas_failed += 1
+            logger.warning("FlareSolverr no pudo resolver el captcha: %s", exc)
+            raise CaptchaRequired(
+                "El OPAC ha solicitado un reCAPTCHA y FlareSolverr no pudo resolverlo"
+            ) from exc
+
+        final_url = solved.url or url
+        response = httpx.Response(
+            solved.status_code,
+            text=solved.text,
+            request=httpx.Request(method, final_url),
+        )
+
+        host = httpx.URL(final_url).host or ""
+        for cookie in solved.cookies:
+            self.client.cookies.set(
+                cookie.name,
+                cookie.value,
+                domain=cookie.domain or host,
+                path=cookie.path or "/",
+            )
+        if solved.user_agent:
+            self.user_agent = solved.user_agent
+            self.client.headers["User-Agent"] = solved.user_agent
+
+        try:
+            self._check_response(response, count_captcha=False)
+        except CaptchaRequired as exc:
+            self.captchas_failed += 1
+            logger.warning("FlareSolverr devolvio otra pagina de captcha")
+            raise CaptchaRequired(
+                "El OPAC ha solicitado un reCAPTCHA y FlareSolverr no lo ha resuelto"
+            ) from exc
+
+        response.raise_for_status()
+        self.captchas_solved += 1
+        return response
 
     def _parse_results(self, response: httpx.Response, query: str) -> SearchPage:
         soup = BeautifulSoup(response.text, "lxml")
@@ -335,6 +459,8 @@ class Harvester:
     def _opac_metrics(self) -> dict[str, int]:
         return {
             "captchas": int(getattr(self.client, "captchas", 0)),
+            "captchas_solved": int(getattr(self.client, "captchas_solved", 0)),
+            "captchas_failed": int(getattr(self.client, "captchas_failed", 0)),
             "session_renewals": int(getattr(self.client, "session_renewals", 0)),
         }
 

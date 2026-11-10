@@ -57,6 +57,8 @@ def _seeded_session():
             "processed": 1,
             "errors": 0,
             "captchas": 1,
+            "captchas_solved": 1,
+            "captchas_failed": 0,
             "session_renewals": 2,
             "failed": ["9"],
         },
@@ -78,6 +80,8 @@ def test_consultas_de_trabajos_cobertura_y_metricas() -> None:
     assert metrics.processed == 1
     assert metrics.errors == 0
     assert metrics.captchas == 1
+    assert metrics.captchas_solved == 1
+    assert metrics.captchas_failed == 0
     assert metrics.session_renewals == 2
     assert metrics.failed == 1
     assert metrics.pending == 1
@@ -141,6 +145,8 @@ def test_api_status_y_coverage() -> None:
     assert payload["coverage"]["fallidas"] == 1
     assert payload["coverage"]["desaparecidas"] == 0
     assert payload["metrics"]["captchas"] == 1
+    assert payload["metrics"]["captchas_solved"] == 1
+    assert payload["metrics"]["captchas_failed"] == 0
     assert payload["metrics"]["session_renewals"] == 2
     assert payload["metrics"]["average_ms"] == 2000.0
     assert payload["worker"]["status"] == "degraded"

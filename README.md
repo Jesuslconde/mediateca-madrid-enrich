@@ -40,8 +40,10 @@ parseados: no crea snapshots HTML ni escribe en `MEDIATECA_RAW_DIR`.
 ## Dashboard de estado
 
 La vista web muestra en modo de solo lectura los trabajos por estado y tipo, los
-trabajos recientes, la cobertura del catalogo y la salud del worker. No crea,
-modifica ni elimina datos, no encola trabajos y no toca el indice.
+trabajos recientes, la cobertura del catalogo y la salud del worker. La unica
+escritura permitida es la seccion "Configuracion de FlareSolverr", que guarda o
+borra una unica fila de configuracion. No crea ni modifica trabajos, ediciones,
+ejemplares ni entradas del indice.
 
 ```bash
 make dashboard        # Levanta el servicio dashboard en segundo plano
@@ -76,13 +78,39 @@ Variables de configuracion:
 - `MEDIATECA_DASHBOARD_WORKER_STALE_SECONDS`: antiguedad maxima del heartbeat antes
   de marcar el worker como `degraded`.
 
+## FlareSolverr
+
+La resolucion de captchas esta desactivada por defecto. Solo se usa cuando existe
+una URL base de FlareSolverr, configurada con `MEDIATECA_FLARESOLVERR_URL` o desde
+la seccion "Configuracion de FlareSolverr" del dashboard. La URL del dashboard se
+guarda en la tabla `app_config` y prevalece sobre la variable de entorno.
+
+- `MEDIATECA_FLARESOLVERR_URL`: URL base de la instancia de FlareSolverr, por
+  ejemplo `http://flaresolverr:8191`.
+- `MEDIATECA_FLARESOLVERR_MAX_TIMEOUT_MS`: tiempo maximo de resolucion en
+  milisegundos. Por defecto, `60000`.
+
+FlareSolverr se usa solo como fallback: la recoleccion normal sigue con `httpx` y
+FlareSolverr se invoca unicamente cuando el OPAC devuelve un reCAPTCHA. Si no hay
+URL configurada o la resolucion falla, el trabajo se detiene y se reprograma con
+el backoff existente. No se incluye un servicio FlareSolverr en `docker-compose.yml`;
+hay que apuntar la variable o la configuracion del dashboard a una instancia propia.
+
+Eludir un captcha puede contravenir las condiciones de uso del OPAC: la funcion
+esta desactivada por defecto y el operador asume la decision de activarla. No
+expongas el dashboard publicamente sin autenticacion: la URL editable podria
+apuntar a servicios internos (SSRF), aunque solo se aceptan URLs `http`/`https`
+sin credenciales.
+
 ## Migraciones
 
 - `scripts/migrate_disponibilidad.sql`: retirada del estado de prestamo.
 - `scripts/migrate_ingesta.sql`: `harvest_jobs`, marcas de progreso, `schema_meta`
   y retirada idempotente de la tabla `snapshots`.
+- `scripts/migrate_flaresolverr.sql`: tabla `app_config` para la configuracion
+  persistida de FlareSolverr.
 
-Ambas son idempotentes. `make migrate` requiere PostgreSQL levantado.
+Todas son idempotentes. `make migrate` requiere PostgreSQL levantado.
 
 ## OpenSpec
 

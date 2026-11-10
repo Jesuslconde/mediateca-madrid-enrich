@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session
 
 from mediateca.catalog.jobs import IngestCoverage, coverage
 from mediateca.core.config import settings
+from mediateca.core.config_store import (
+    FLARESOLVERR_URL_KEY,
+    ConfigValidationError,
+    get_config_value,
+    normalize_flaresolverr_url,
+)
 
 
 @dataclass(slots=True)
@@ -18,6 +24,51 @@ class WorkerHealth:
     status: str
     last_heartbeat: datetime | None
     source: str | None
+
+
+@dataclass(slots=True)
+class FlareSolverrConfig:
+    saved_url: str | None
+    env_url: str | None
+    effective_url: str | None
+    source: str
+    active: bool
+
+
+def _normalize_or_none(value: str | None) -> str | None:
+    try:
+        return normalize_flaresolverr_url(value)
+    except ConfigValidationError:
+        return None
+
+
+def flaresolverr_config(session: Session) -> FlareSolverrConfig:
+    saved = _normalize_or_none(get_config_value(session, FLARESOLVERR_URL_KEY))
+    env = _normalize_or_none(settings.flaresolverr_url)
+
+    if saved:
+        return FlareSolverrConfig(
+            saved_url=saved,
+            env_url=env,
+            effective_url=saved,
+            source="dashboard",
+            active=True,
+        )
+    if env:
+        return FlareSolverrConfig(
+            saved_url=None,
+            env_url=env,
+            effective_url=env,
+            source="entorno",
+            active=True,
+        )
+    return FlareSolverrConfig(
+        saved_url=None,
+        env_url=None,
+        effective_url=None,
+        source="ninguno",
+        active=False,
+    )
 
 
 def job_status_counts(session: Session) -> dict[str, int]:

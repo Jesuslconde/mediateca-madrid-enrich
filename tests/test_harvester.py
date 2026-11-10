@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import httpx
+import pytest
 from mediateca_shared.models import Edicion, HarvestJob
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from mediateca.catalog.flaresolverr import (
+    FlareSolverrCookie,
+    FlareSolverrError,
+    FlareSolverrResponse,
+)
 from mediateca.catalog.harvester import (
+    CaptchaRequired,
     Harvester,
     OpacClient,
     SearchItem,
@@ -164,3 +172,181 @@ def test_harvest_discovery_guarda_checkpoint_y_reanuda_sin_duplicar(
     nuevo = session.scalars(select(Edicion).where(Edicion.titn == "2110000")).one()
     assert nuevo.discovery_seen_at is not None
     assert nuevo.missing_at is None
+
+
+class _FakeSolver:
+    def __init__(
+        self,
+        response: FlareSolverrResponse | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.response = response
+        self.error = error
+        self.calls: list[dict] = []
+
+    def request(self, method, url, *, params=None, data=None, cookies=None):
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "params": params,
+                "data": data,
+                "cookies": cookies,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        assert self.response is not None
+        return self.response
+
+
+def _captcha_client(
+    solver: _FakeSolver, *, url: str = "http://flare:8191"
+) -> OpacClient:
+    client = OpacClient(
+        delay=0,
+        flaresolverr_url=url,
+        flaresolverr_client=solver,
+    )
+    previous = client.client
+    client.client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text="No soy un robot")
+        )
+    )
+    previous.close()
+    return client
+
+
+def test_opac_client_configura_flaresolverr() -> None:
+    client = OpacClient(
+        delay=0,
+        flaresolverr_url="http://flare:8191",
+        flaresolverr_max_timeout_ms=1234,
+    )
+    try:
+        assert client.flaresolverr_url == "http://flare:8191"
+        assert client.flaresolverr_max_timeout_ms == 1234
+        assert client.captchas == 0
+        assert client.captchas_solved == 0
+        assert client.captchas_failed == 0
+    finally:
+        client.close()
+
+
+def test_resuelve_captcha_get_y_sincroniza_cookies() -> None:
+    solver = _FakeSolver(
+        FlareSolverrResponse(
+            status_code=200,
+            text="<html>ficha resuelta</html>",
+            url="https://opac.example/final",
+            cookies=[
+                FlareSolverrCookie(
+                    name="sid", value="nuevo", domain="opac.example", path="/"
+                )
+            ],
+            user_agent="FlareSolverr/UA",
+        )
+    )
+    client = _captcha_client(solver)
+    client.client.cookies.set("previa", "1", domain="opac.example", path="/")
+    try:
+        response = client._request(
+            "GET", "https://opac.example/buscar", params={"ACC": 101}
+        )
+        cookies = {cookie.name: cookie.value for cookie in client.client.cookies.jar}
+        user_agent = client.client.headers["User-Agent"]
+        metrics = {
+            "captchas": client.captchas,
+            "resueltos": client.captchas_solved,
+            "fallidos": client.captchas_failed,
+        }
+    finally:
+        client.close()
+
+    assert response.text == "<html>ficha resuelta</html>"
+    assert str(response.url) == "https://opac.example/final"
+    assert solver.calls[0]["method"] == "GET"
+    assert solver.calls[0]["params"] == {"ACC": 101}
+    assert solver.calls[0]["cookies"][0].name == "previa"
+    assert cookies["sid"] == "nuevo"
+    assert user_agent == "FlareSolverr/UA"
+    assert metrics == {"captchas": 1, "resueltos": 1, "fallidos": 0}
+
+
+def test_resuelve_captcha_post_conservando_el_formulario() -> None:
+    solver = _FakeSolver(
+        FlareSolverrResponse(
+            status_code=200,
+            text="<html>busqueda resuelta</html>",
+            url="https://opac.example/buscar",
+        )
+    )
+    client = _captcha_client(solver)
+    try:
+        response = client._request(
+            "POST",
+            "https://opac.example/buscar",
+            data={"ACC": "131", "xsqf01": "cine"},
+        )
+    finally:
+        client.close()
+
+    assert response.text == "<html>busqueda resuelta</html>"
+    assert solver.calls[0]["method"] == "POST"
+    assert solver.calls[0]["data"] == {"ACC": "131", "xsqf01": "cine"}
+    assert client.captchas_solved == 1
+
+
+def test_sin_url_de_flaresolverr_el_captcha_falla(monkeypatch) -> None:
+    from mediateca.core.config import settings
+
+    monkeypatch.setattr(settings, "flaresolverr_url", None)
+    solver = _FakeSolver()
+    client = _captcha_client(solver, url="")
+    try:
+        with pytest.raises(CaptchaRequired):
+            client._request("GET", "https://opac.example/buscar")
+    finally:
+        client.close()
+
+    assert solver.calls == []
+    assert client.captchas == 1
+    assert client.captchas_solved == 0
+    assert client.captchas_failed == 1
+
+
+def test_error_de_flaresolverr_falla_sin_bucle() -> None:
+    solver = _FakeSolver(error=FlareSolverrError("no disponible"))
+    client = _captcha_client(solver)
+    try:
+        with pytest.raises(CaptchaRequired):
+            client._request("GET", "https://opac.example/buscar")
+    finally:
+        client.close()
+
+    assert len(solver.calls) == 1
+    assert client.captchas == 1
+    assert client.captchas_solved == 0
+    assert client.captchas_failed == 1
+
+
+def test_respuesta_de_flaresolverr_que_sigue_siendo_captcha() -> None:
+    solver = _FakeSolver(
+        FlareSolverrResponse(
+            status_code=200,
+            text="No soy un robot",
+            url="https://opac.example/buscar",
+        )
+    )
+    client = _captcha_client(solver)
+    try:
+        with pytest.raises(CaptchaRequired):
+            client._request("GET", "https://opac.example/buscar")
+    finally:
+        client.close()
+
+    assert len(solver.calls) == 1
+    assert client.captchas == 1
+    assert client.captchas_solved == 0
+    assert client.captchas_failed == 1

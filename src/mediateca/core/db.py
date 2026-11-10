@@ -37,6 +37,8 @@ def init_db() -> None:
     """Crea el esquema si no existe. Es idempotente."""
     from mediateca_shared import models  # noqa: F401  (registra las tablas)
 
+    from mediateca.core import models as core_models  # noqa: F401  (registra app_config)
+
     Base.metadata.create_all(bind=get_engine())
 
 
