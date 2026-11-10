@@ -37,16 +37,19 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     harvest_queries: str = "cine,documental,animacion,musica"
-    scheduler_enabled: bool = False
+    scheduler_enabled: bool = True
     scheduler_harvest_hours: int = 24
+    scheduler_poll_seconds: float = 60.0
 
     worker_concurrency: int = 1
     worker_poll_seconds: float = 5.0
     worker_heartbeat_seconds: float = 30.0
     worker_heartbeat_file: Path = Path("/tmp/mediateca-worker.heartbeat")
+    worker_stale_seconds: int = 120
 
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8080
+    dashboard_admin_token: str | None = None
     dashboard_refresh_seconds: int = 15
     dashboard_recent_limit: int = 20
     dashboard_worker_stale_seconds: int = 120

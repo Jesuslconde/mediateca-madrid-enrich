@@ -325,10 +325,24 @@ def select_pending_titns(
     *,
     limit: int = 5000,
     after_titn: str | None = None,
+    since: datetime | None = None,
 ) -> list[str]:
     """Devuelve hasta ``limit`` TITN pendientes de enriquecer, ordenados por TITN."""
     stmt = select(Edicion.titn).where(Edicion.detail_fetched_at.is_(None))
     if after_titn is not None:
         stmt = stmt.where(Edicion.titn > after_titn)
+    if since is not None:
+        stmt = stmt.where(Edicion.discovery_seen_at >= since)
     stmt = stmt.order_by(Edicion.titn).limit(limit)
     return list(session.scalars(stmt))
+
+
+def count_pending_titns(
+    session: Session,
+    *,
+    since: datetime | None = None,
+) -> int:
+    stmt = select(func.count(Edicion.id)).where(Edicion.detail_fetched_at.is_(None))
+    if since is not None:
+        stmt = stmt.where(Edicion.discovery_seen_at >= since)
+    return int(session.scalar(stmt) or 0)

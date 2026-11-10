@@ -125,6 +125,34 @@ hay URL, el servicio no responde o la respuesta sigue siendo un captcha, el
 recolector registra el fallo y el trabajo se reprograma con el backoff existente,
 sin reintentar la resolucion dentro de la misma peticion.
 
+## Programacion de la ingesta
+
+El servicio `scheduler` solo escribe en `harvest_jobs`; no descarga fichas ni
+toca Meilisearch. Cada `MEDIATECA_SCHEDULER_POLL_SECONDS` lee la configuracion de
+`app_config` y comprueba si toca encolar:
+
+- `discover` incremental cada `discover_interval_hours` (12 por defecto);
+- `discover` completo cada `full_sweep_interval_hours` (168 por defecto, `0` lo
+  desactiva);
+- `enrich` de los stubs nuevos si no hay un descubrimiento activo y quedan
+  pendientes desde el ultimo descubrimiento completado.
+
+El descubrimiento incremental reutiliza el `cursor_doc` y `cursor_titn` del ultimo
+descubrimiento completado. El barrido completo semanal corrige posibles cambios
+de orden del catalogo. Los jobs guardan `stats.mode` (`full` o `incremental`) y
+`stats.reason`.
+
+Cuando un descubrimiento termina con nuevos registros, el worker encola
+automaticamente un `enrich` con `stats.since = started_at` del descubrimiento.
+`select_pending_titns` filtra por `discovery_seen_at >= since`, de modo que el
+enriquecimiento programado procesa solo los stubs nuevos. El boton manual del
+dashboard encola un enriquecimiento de todos los pendientes.
+
+El dashboard permite encolar `discover`, `enrich` e `index` bajo demanda y editar
+la programacion. Las acciones de escritura se protegen con
+`MEDIATECA_DASHBOARD_ADMIN_TOKEN`: el operador introduce el token una vez y se
+guarda en una cookie `HttpOnly` con `SameSite=Strict`.
+
 ## Observabilidad de la ingesta
 
 El dashboard sirve tambien la API de observabilidad, siempre de solo lectura:

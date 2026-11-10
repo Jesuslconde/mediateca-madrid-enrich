@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit, urlunsplit
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, inspect, select
 from sqlalchemy.orm import Session
 
 from mediateca.core.config import settings
@@ -56,7 +56,16 @@ def normalize_flaresolverr_url(value: str | None) -> str | None:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
+def _config_table_exists(session: Session) -> bool:
+    bind = session.get_bind()
+    if bind is None:
+        return False
+    return inspect(bind).has_table(AppConfig.__tablename__)
+
+
 def get_config_value(session: Session, key: str) -> str | None:
+    if not _config_table_exists(session):
+        return None
     value = session.scalar(select(AppConfig.value).where(AppConfig.key == key))
     if value is None:
         return None

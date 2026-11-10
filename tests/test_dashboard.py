@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 from fastapi.testclient import TestClient
 from mediateca_shared.models import Edicion, HarvestJob
@@ -16,6 +17,7 @@ from mediateca.catalog.jobs import (
     claim_job,
     create_job,
     create_stub,
+    enqueue_job,
     finish_job,
     mark_enriched,
 )
@@ -27,6 +29,7 @@ from mediateca.core.config_store import (
 )
 from mediateca.core.db import Base
 from mediateca.core.models import AppConfig  # noqa: F401  (registra la tabla)
+from mediateca.core.scheduling import load_schedule_settings
 from mediateca.dashboard.queries import (
     catalog_coverage,
     enrichment_percentage,
@@ -261,6 +264,26 @@ def test_app_responde_y_muestra_los_datos(monkeypatch, tmp_path) -> None:
     assert "Enriquecimiento" in html
 
 
+def test_dashboard_sin_tabla_app_config_no_se_degrada(
+    monkeypatch, tmp_path
+) -> None:
+    session = _session()
+    AppConfig.__table__.drop(session.get_bind())
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    monkeypatch.setattr(settings, "flaresolverr_url", None)
+
+    client = _client_for(session)
+    try:
+        response = client.get("/")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200
+    assert "Estado degradado" not in response.text
+    assert "Configuracion de FlareSolverr" in response.text
+    assert "desactivada" in response.text
+
+
 def test_app_muestra_estado_degradado_sin_trazas(monkeypatch) -> None:
     class BrokenSession:
         def execute(self, *args, **kwargs):
@@ -475,3 +498,139 @@ def test_post_error_de_base_de_datos_muestra_mensaje(
 
     assert response.status_code == 303
     assert "No se pudo guardar la configuracion de FlareSolverr" in error_page.text
+
+
+def test_dashboard_muestra_programacion_y_tareas(monkeypatch, tmp_path) -> None:
+    session = _session()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    monkeypatch.setattr(settings, "dashboard_admin_token", None)
+
+    client = _client_for(session)
+    try:
+        response = client.get("/")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200
+    assert "Programacion" in response.text
+    assert "Tareas bajo demanda" in response.text
+    assert "Buscar novedades" in response.text
+    assert "Enriquecer pendientes" in response.text
+
+
+def test_post_programacion_guarda_los_intervalos(monkeypatch, tmp_path) -> None:
+    session = _session()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    monkeypatch.setattr(settings, "dashboard_admin_token", None)
+
+    client = _client_for(session)
+    try:
+        response = client.post(
+            "/config/schedule",
+            data={
+                "enabled": "true",
+                "discover_interval_hours": "6",
+                "full_sweep_interval_hours": "0",
+                "enrich_interval_hours": "24",
+                "enrich_batch_size": "1000",
+            },
+            follow_redirects=False,
+        )
+        schedule = load_schedule_settings(session)
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 303
+    assert schedule.enabled is True
+    assert schedule.discover_interval_hours == 6
+    assert schedule.full_sweep_interval_hours == 0
+    assert schedule.enrich_interval_hours == 24
+    assert schedule.enrich_batch_size == 1000
+
+
+def test_post_job_encola_descubrimiento(monkeypatch, tmp_path) -> None:
+    session = _session()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    monkeypatch.setattr(settings, "dashboard_admin_token", None)
+
+    client = _client_for(session)
+    try:
+        response = client.post(
+            "/jobs",
+            data={"job_type": "discover", "mode": "incremental"},
+            follow_redirects=False,
+        )
+        job = session.scalars(
+            select(HarvestJob).where(HarvestJob.job_type == "discover")
+        ).first()
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 303
+    assert job is not None
+    assert job.status == "pending"
+
+
+def test_post_job_duplicado_no_crea_otro(monkeypatch, tmp_path) -> None:
+    session = _session()
+    enqueue_job(session, "enrich")
+    session.commit()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    monkeypatch.setattr(settings, "dashboard_admin_token", None)
+
+    client = _client_for(session)
+    try:
+        response = client.post(
+            "/jobs",
+            data={"job_type": "enrich", "limit": "100"},
+            follow_redirects=False,
+        )
+        total = len(
+            list(session.scalars(select(HarvestJob).where(HarvestJob.job_type == "enrich")))
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 303
+    assert total == 1
+    assert "Ya hay un trabajo" in unquote_plus(response.headers["location"])
+
+
+def test_escritura_requiere_token_si_esta_configurado(monkeypatch, tmp_path) -> None:
+    session = _session()
+    monkeypatch.setattr(settings, "worker_heartbeat_file", tmp_path / "missing")
+    monkeypatch.setattr(settings, "dashboard_admin_token", "secreto")
+
+    client = _client_for(session)
+    try:
+        denied = client.post(
+            "/jobs",
+            data={"job_type": "discover", "mode": "incremental"},
+            follow_redirects=False,
+        )
+        no_job = session.scalars(
+            select(HarvestJob).where(HarvestJob.job_type == "discover")
+        ).first()
+        login = client.post(
+            "/admin/login",
+            data={"token": "secreto"},
+            follow_redirects=False,
+        )
+        allowed = client.post(
+            "/jobs",
+            data={"job_type": "discover", "mode": "incremental"},
+            follow_redirects=False,
+        )
+        job = session.scalars(
+            select(HarvestJob).where(HarvestJob.job_type == "discover")
+        ).first()
+    finally:
+        _clear_overrides()
+
+    assert denied.status_code == 303
+    assert "Token de administracion" in unquote_plus(denied.headers["location"])
+    assert no_job is None
+    assert login.status_code == 303
+    assert allowed.status_code == 303
+    assert job is not None
+    assert job.status == "pending"

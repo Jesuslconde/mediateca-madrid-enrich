@@ -15,6 +15,7 @@ from mediateca.catalog.jobs import (
     create_stub,
     finish_job,
     mark_enriched,
+    recover_stale_jobs,
     requeue_job,
     touch_job,
     worker_tick,
@@ -452,3 +453,101 @@ def test_worker_usa_la_url_de_flaresolverr_persistida(monkeypatch) -> None:
     assert processed.status == "completed"
     assert capturado["flaresolverr_url"] == "http://db:8191"
     assert backoff == 0.0
+
+
+def test_recupera_trabajo_estancado_y_lo_reencola() -> None:
+    session = _session()
+    start = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    job = create_job(session, "enrich", max_attempts=3)
+    claimed = claim_job(session, now=start)
+    session.commit()
+
+    recuperados = recover_stale_jobs(
+        session, now=start + timedelta(minutes=5), stale_seconds=120
+    )
+    session.commit()
+
+    assert recuperados == 1
+    assert claimed is not None
+    assert job.status == "pending"
+    assert job.started_at is None
+    assert job.error == "Heartbeat caducado; trabajo reencolado"
+
+
+def test_trabajo_estancado_sin_intentos_termina_failed() -> None:
+    session = _session()
+    start = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    job = create_job(session, "enrich", max_attempts=1)
+    claim_job(session, now=start)
+    session.commit()
+
+    recuperados = recover_stale_jobs(
+        session, now=start + timedelta(minutes=5), stale_seconds=120
+    )
+    session.commit()
+
+    assert recuperados == 1
+    assert job.status == "failed"
+    assert job.error == "Heartbeat caducado; se agotaron los intentos"
+
+
+def test_worker_tick_recupera_y_reclama_el_trabajo_estancado() -> None:
+    session = _session()
+    start = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    job = create_job(session, "enrich", max_attempts=3)
+    claim_job(session, now=start)
+    session.commit()
+
+    processed, backoff = worker_tick(
+        session,
+        handlers={"enrich": lambda session, job: {"processed": 0}},
+    )
+    session.commit()
+
+    assert processed is not None
+    assert processed.id == job.id
+    assert processed.status == "completed"
+    assert processed.attempts == 2
+    assert backoff == 0.0
+
+
+def test_descubrimiento_con_nuevos_encola_enriquecimiento(monkeypatch) -> None:
+    import mediateca.catalog.harvester as harvester_module
+
+    session = _session()
+    create_job(session, "discover")
+    session.commit()
+
+    class FakeOpacClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class FakeHarvester:
+        def __init__(self, session, client) -> None:
+            self.session = session
+
+        def harvest_discovery(self, *, job):  # noqa: ANN001
+            create_stub(self.session, "100")
+            return {"processed": 1}
+
+    monkeypatch.setattr(harvester_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(harvester_module, "Harvester", FakeHarvester)
+
+    processed, _ = worker_tick(session)
+    session.commit()
+
+    assert processed is not None
+    assert processed.job_type == "discover"
+    enrich = session.scalars(
+        select(HarvestJob).where(HarvestJob.job_type == "enrich")
+    ).first()
+    assert enrich is not None
+    assert enrich.status == "pending"
+    assert "since" in enrich.stats
+    assert enrich.stats["reason"] == "after_discover"

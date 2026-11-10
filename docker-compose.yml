@@ -57,10 +57,12 @@ services:
       MEDIATECA_WORKER_CONCURRENCY: ${MEDIATECA_WORKER_CONCURRENCY:-1}
       MEDIATECA_WORKER_POLL_SECONDS: ${MEDIATECA_WORKER_POLL_SECONDS:-5.0}
       MEDIATECA_WORKER_HEARTBEAT_SECONDS: ${MEDIATECA_WORKER_HEARTBEAT_SECONDS:-30.0}
-      MEDIATECA_WORKER_HEARTBEAT_FILE: /tmp/mediateca-worker.heartbeat
+      MEDIATECA_WORKER_HEARTBEAT_FILE: /run/mediateca/worker.heartbeat
+      MEDIATECA_WORKER_STALE_SECONDS: ${MEDIATECA_WORKER_STALE_SECONDS:-120}
       MEDIATECA_LOG_LEVEL: ${MEDIATECA_LOG_LEVEL:-INFO}
     volumes:
       - raw_data:/data/raw
+      - worker_heartbeat:/run/mediateca
     depends_on:
       db:
         condition: service_healthy
@@ -70,7 +72,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "test -f /tmp/mediateca-worker.heartbeat && find /tmp/mediateca-worker.heartbeat -mmin -2 | grep -q .",
+          "test -f /run/mediateca/worker.heartbeat && find /run/mediateca/worker.heartbeat -mmin -2 | grep -q .",
         ]
       interval: 30s
       timeout: 5s
@@ -92,10 +94,13 @@ services:
       MEDIATECA_DASHBOARD_REFRESH_SECONDS: ${MEDIATECA_DASHBOARD_REFRESH_SECONDS:-15}
       MEDIATECA_DASHBOARD_RECENT_LIMIT: ${MEDIATECA_DASHBOARD_RECENT_LIMIT:-20}
       MEDIATECA_DASHBOARD_WORKER_STALE_SECONDS: ${MEDIATECA_DASHBOARD_WORKER_STALE_SECONDS:-120}
-      MEDIATECA_WORKER_HEARTBEAT_FILE: /tmp/mediateca-worker.heartbeat
+      MEDIATECA_WORKER_HEARTBEAT_FILE: /run/mediateca/worker.heartbeat
       MEDIATECA_FLARESOLVERR_URL: ${MEDIATECA_FLARESOLVERR_URL:-}
       MEDIATECA_FLARESOLVERR_MAX_TIMEOUT_MS: ${MEDIATECA_FLARESOLVERR_MAX_TIMEOUT_MS:-60000}
+      MEDIATECA_DASHBOARD_ADMIN_TOKEN: ${MEDIATECA_DASHBOARD_ADMIN_TOKEN:-}
       MEDIATECA_LOG_LEVEL: ${MEDIATECA_LOG_LEVEL:-INFO}
+    volumes:
+      - worker_heartbeat:/run/mediateca
     ports:
       - "${MEDIATECA_DASHBOARD_PORT:-8080}:${MEDIATECA_DASHBOARD_PORT:-8080}"
     depends_on:
@@ -118,27 +123,15 @@ services:
   scheduler:
     image: mediateca-enrich:local
     restart: unless-stopped
-    profiles: ["jobs"]
     environment:
       MEDIATECA_ENVIRONMENT: ${MEDIATECA_ENVIRONMENT:-development}
       MEDIATECA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mediateca}:${POSTGRES_PASSWORD:-mediateca}@db:5432/${POSTGRES_DB:-mediateca}
-      MEDIATECA_MEILISEARCH_URL: http://meilisearch:7700
-      MEDIATECA_MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev_master_key_change_me_123456}
-      MEDIATECA_MEILISEARCH_INDEX: ${MEDIATECA_MEILISEARCH_INDEX:-ediciones}
-      MEDIATECA_RAW_DIR: /data/raw
-      MEDIATECA_CRAWL_DELAY: ${MEDIATECA_CRAWL_DELAY:-1.0}
-      MEDIATECA_FLARESOLVERR_URL: ${MEDIATECA_FLARESOLVERR_URL:-}
-      MEDIATECA_FLARESOLVERR_MAX_TIMEOUT_MS: ${MEDIATECA_FLARESOLVERR_MAX_TIMEOUT_MS:-60000}
-      MEDIATECA_HARVEST_QUERIES: ${MEDIATECA_HARVEST_QUERIES:-cine,documental,animacion,musica}
-      MEDIATECA_SCHEDULER_HARVEST_HOURS: ${MEDIATECA_SCHEDULER_HARVEST_HOURS:-24}
+      MEDIATECA_SCHEDULER_ENABLED: ${MEDIATECA_SCHEDULER_ENABLED:-true}
+      MEDIATECA_SCHEDULER_POLL_SECONDS: ${MEDIATECA_SCHEDULER_POLL_SECONDS:-60}
       MEDIATECA_LOG_LEVEL: ${MEDIATECA_LOG_LEVEL:-INFO}
-    volumes:
-      - raw_data:/data/raw
     depends_on:
       db:
         condition: service_healthy
-      meilisearch:
-        condition: service_started
     networks:
       - mediateca
     command: ["python", "-m", "mediateca", "scheduler"]
@@ -147,6 +140,7 @@ volumes:
   postgres_data:
   meili_data:
   raw_data:
+  worker_heartbeat:
 
 networks:
   mediateca:

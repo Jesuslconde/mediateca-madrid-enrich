@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import asdict
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -24,6 +23,7 @@ from mediateca.catalog.jobs import (
     worker_tick,
 )
 from mediateca.catalog.parser import parse_file
+from mediateca.catalog.scheduler import enqueue_due_jobs, run_scheduler
 from mediateca.core.config import settings
 from mediateca.core.config_store import effective_flaresolverr_url
 from mediateca.core.db import get_session_factory, init_db, session_scope
@@ -324,47 +324,34 @@ def parse_file_command(path: Path = typer.Argument(..., exists=True)) -> None:
     console.print_json(json.dumps(asdict(parsed), ensure_ascii=False, default=str))
 
 
-def _run_harvest_job() -> None:
-    logger.info("Iniciando recoleccion programada")
-    try:
-        for query in settings.queries:
-            with session_scope() as session, OpacClient(
-                flaresolverr_url=effective_flaresolverr_url(session)
-            ) as client:
-                harvester = Harvester(session, client=client)
-                stats = harvester.harvest_query(query, max_pages=2)
-                logger.info("Recoleccion %s: %s", query, stats)
-        with session_scope() as session:
-            total = MeiliIndexer().index_editions(session)
-        logger.info("Indexadas %s ediciones", total)
-    except Exception:  # noqa: BLE001
-        logger.exception("Fallo la recoleccion programada")
-
-
 @app.command("scheduler")
-def scheduler_command() -> None:
-    """Ejecuta la recoleccion de fichas periodicamente."""
-    from apscheduler.schedulers.blocking import BlockingScheduler
-
+def scheduler_command(
+    once: bool = typer.Option(False, "--once", help="Revisa y encola una vez"),
+    poll: float = typer.Option(
+        settings.scheduler_poll_seconds, "--poll", min=1.0
+    ),
+) -> None:
+    """Encola los trabajos de descubrimiento y enriquecimiento programados."""
     configure_logging()
-    try:
-        MeiliIndexer().ensure_index()
-    except Exception:  # noqa: BLE001
-        logger.exception("No se pudo preparar Meilisearch")
+    factory = get_session_factory()
 
-    scheduler = BlockingScheduler(timezone="Europe/Madrid")
-    now = datetime.now() + timedelta(minutes=1)
-    scheduler.add_job(
-        _run_harvest_job,
-        "interval",
-        hours=settings.scheduler_harvest_hours,
-        next_run_time=now,
-        id="harvest",
-    )
+    if once:
+        with session_scope() as session:
+            jobs = enqueue_due_jobs(session)
+            session.commit()
+        if jobs:
+            console.print(
+                "[green]Trabajos encolados:[/green] "
+                + ", ".join(f"{job.id}:{job.job_type}" for job in jobs)
+            )
+        else:
+            console.print("[yellow]No hay trabajos programados pendientes[/yellow]")
+        return
+
     console.print("[green]Scheduler iniciado[/green]")
     try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
+        run_scheduler(factory, poll_seconds=poll)
+    except KeyboardInterrupt:
         console.print("Scheduler detenido")
 
 

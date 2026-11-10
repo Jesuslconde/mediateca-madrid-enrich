@@ -23,14 +23,18 @@
       th { background: #f4f6f8; }
       .error { color: #a23014; overflow-wrap: anywhere; }
       form { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .5rem; }
-      input[type="url"] { min-width: 320px; padding: .45rem .6rem; border: 1px solid #cfd6df; border-radius: 6px; }
+      input[type="url"], input[type="number"], input[type="password"] { min-width: 90px; padding: .45rem .6rem; border: 1px solid #cfd6df; border-radius: 6px; }
+      input[type="url"] { min-width: 320px; }
       button { padding: .45rem .8rem; border: 0; border-radius: 6px; background: #12355b; color: #fff; cursor: pointer; }
+      button:disabled { background: #9aa7b5; cursor: not-allowed; }
+      .actions { display: flex; gap: .75rem; flex-wrap: wrap; align-items: flex-end; }
+      .actions form { margin-top: 0; }
     </style>
   </head>
   <body>
     <header>
       <h1>Mediateca Madrid - Estado de la ingesta</h1>
-      <p class="muted">Vista de solo lectura salvo la configuracion de FlareSolverr. Se actualiza cada {{ refresh_seconds }} s. Generada {{ generated_at.strftime('%Y-%m-%d %H:%M:%S %Z') }}.</p>
+      <p class="muted">Vista de estado y administracion de la ingesta. Se actualiza cada {{ refresh_seconds }} s. Generada {{ generated_at.strftime('%Y-%m-%d %H:%M:%S %Z') }}.</p>
     </header>
     <main>
       <section>
@@ -45,6 +49,91 @@
             | Sin heartbeat registrado
           {% endif %}
         </p>
+      </section>
+
+      <section>
+        <h2>Administracion</h2>
+        {% if admin_required and not is_admin %}
+          <p class="muted">Introduce el token de administracion para guardar configuracion o encolar trabajos.</p>
+          <form method="post" action="/admin/login">
+            <input type="password" name="token" placeholder="Token de administracion" required>
+            <button type="submit">Desbloquear</button>
+          </form>
+        {% elif is_admin %}
+          <p class="ok">Sesion de administracion activa.</p>
+          <form method="post" action="/admin/logout">
+            <button type="submit">Cerrar sesion</button>
+          </form>
+        {% else %}
+          <p class="muted">No hay token configurado; las acciones de escritura estan abiertas.</p>
+        {% endif %}
+      </section>
+
+      <section>
+        <h2>Programacion</h2>
+        <p>
+          Estado:
+          <span class="{{ 'ok' if schedule.enabled else 'degraded' }}">{{ 'activa' if schedule.enabled else 'desactivada' }}</span>
+          | Pendientes de enriquecer: {{ pending_titns }}
+        </p>
+        <div class="grid">
+          <div class="metric">
+            <span class="muted">Descubrimiento</span>
+            <strong>{{ 'cada ' ~ schedule.discover_interval_hours ~ ' h' }}</strong>
+            <span class="muted">Ultima: {{ schedule_status.discover.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.discover.last_run else 'nunca' }}</span>
+            <span class="muted">Proxima: {{ schedule_status.discover.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.discover.next_run else '—' }}</span>
+          </div>
+          <div class="metric">
+            <span class="muted">Barrido completo</span>
+            <strong>{{ ('cada ' ~ schedule.full_sweep_interval_hours ~ ' h') if schedule.full_sweep_interval_hours else 'desactivado' }}</strong>
+            <span class="muted">Ultima: {{ schedule_status.full_sweep.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.full_sweep.last_run else 'nunca' }}</span>
+            <span class="muted">Proxima: {{ schedule_status.full_sweep.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.full_sweep.next_run else '—' }}</span>
+          </div>
+          <div class="metric">
+            <span class="muted">Enriquecimiento</span>
+            <strong>{{ 'cada ' ~ schedule.enrich_interval_hours ~ ' h' }}</strong>
+            <span class="muted">Ultima: {{ schedule_status.enrich.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.enrich.last_run else 'nunca' }}</span>
+            <span class="muted">Proxima: {{ schedule_status.enrich.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.enrich.next_run else '—' }}</span>
+          </div>
+        </div>
+        {% if is_admin %}
+          <form method="post" action="/config/schedule">
+            <label><input type="checkbox" name="enabled" value="true" {% if schedule.enabled %}checked{% endif %}> Activa</label>
+            <label>Descubrimiento cada <input type="number" name="discover_interval_hours" value="{{ schedule.discover_interval_hours }}" min="1" max="720"> h</label>
+            <label>Barrido completo cada <input type="number" name="full_sweep_interval_hours" value="{{ schedule.full_sweep_interval_hours }}" min="0" max="8760"> h</label>
+            <label>Enriquecimiento cada <input type="number" name="enrich_interval_hours" value="{{ schedule.enrich_interval_hours }}" min="1" max="720"> h</label>
+            <label>Lote de <input type="number" name="enrich_batch_size" value="{{ schedule.enrich_batch_size }}" min="1" max="50000"> fichas</label>
+            <button type="submit">Guardar programacion</button>
+          </form>
+        {% else %}
+          <p class="muted">Desbloquea la administracion para modificar la programacion.</p>
+        {% endif %}
+      </section>
+
+      <section>
+        <h2>Tareas bajo demanda</h2>
+        <div class="actions">
+          <form method="post" action="/jobs">
+            <input type="hidden" name="job_type" value="discover">
+            <input type="hidden" name="mode" value="incremental">
+            <button type="submit" {% if active_jobs['discover'] or not is_admin %}disabled{% endif %}>Buscar novedades</button>
+          </form>
+          <form method="post" action="/jobs" onsubmit="return confirm('El descubrimiento completo recorre todo el catalogo y puede tardar horas. ¿Continuar?');">
+            <input type="hidden" name="job_type" value="discover">
+            <input type="hidden" name="mode" value="full">
+            <button type="submit" {% if active_jobs['discover'] or not is_admin %}disabled{% endif %}>Descubrimiento completo</button>
+          </form>
+          <form method="post" action="/jobs">
+            <input type="hidden" name="job_type" value="enrich">
+            <label>Lote <input type="number" name="limit" value="5000" min="1" max="50000"></label>
+            <button type="submit" {% if active_jobs['enrich'] or not is_admin %}disabled{% endif %}>Enriquecer pendientes</button>
+          </form>
+          <form method="post" action="/jobs">
+            <input type="hidden" name="job_type" value="index">
+            <button type="submit" {% if active_jobs['index'] or not is_admin %}disabled{% endif %}>Reindexar</button>
+          </form>
+        </div>
+        <p class="muted">Los trabajos se ejecutan de uno en uno en el worker. No se encola un trabajo si ya hay otro del mismo tipo activo.</p>
       </section>
 
       <section>

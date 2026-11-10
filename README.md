@@ -102,6 +102,36 @@ expongas el dashboard publicamente sin autenticacion: la URL editable podria
 apuntar a servicios internos (SSRF), aunque solo se aceptan URLs `http`/`https`
 sin credenciales.
 
+## Programacion y tareas bajo demanda
+
+El stack incluye un servicio `scheduler` que no ejecuta el OPAC: solo encola
+trabajos en `harvest_jobs`. Por defecto:
+
+- busca novedades cada 12 horas mediante descubrimiento incremental;
+- hace un barrido completo del catalogo cada 7 dias como red de seguridad;
+- encola el enriquecimiento de los nuevos registros despues de cada
+  descubrimiento;
+- evita duplicados si ya hay un trabajo activo del mismo tipo.
+
+Los intervalos, el tamano de lote, el barrido completo y la activacion se guardan
+en `app_config` y se editan desde la seccion "Programacion" del dashboard.
+
+El dashboard tambien permite lanzar bajo demanda:
+
+- "Buscar novedades": descubrimiento incremental.
+- "Descubrimiento completo": recorre todo el catalogo.
+- "Enriquecer pendientes": enriquece stubs pendientes.
+- "Reindexar": encola una indexacion.
+
+Variables relacionadas:
+
+- `MEDIATECA_SCHEDULER_ENABLED`: valor por defecto si no hay configuracion en el
+  dashboard.
+- `MEDIATECA_SCHEDULER_POLL_SECONDS`: frecuencia con la que el scheduler revisa
+  si toca encolar.
+- `MEDIATECA_DASHBOARD_ADMIN_TOKEN`: token necesario para las acciones de
+  escritura del dashboard. Si queda vacio, las acciones estan abiertas.
+
 ## Migraciones
 
 - `scripts/migrate_disponibilidad.sql`: retirada del estado de prestamo.

@@ -37,6 +37,16 @@ NEXT_RE = re.compile(r"ACC=161(?:&amp;|&)DOC=(\d+)")
 TOTAL_RE = re.compile(r"\(([\d.]+)\s*Registros\)")
 
 
+def _parse_since(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
 class OpacError(RuntimeError):
     pass
 
@@ -555,6 +565,7 @@ class Harvester:
         limit: int = 5000,
         delay: float | None = None,
         cursor_titn: str | None = None,
+        since: datetime | None = None,
         job: HarvestJob | None = None,
     ) -> dict[str, int | list[str] | None]:
         delay = self.client.delay if delay is None else delay
@@ -569,6 +580,9 @@ class Harvester:
         else:
             cursor_titn = cursor_titn if cursor_titn is not None else job.cursor_titn
             limit = job.batch_size or limit
+        job_stats = dict(job.stats or {})
+        since = since or _parse_since(job_stats.get("since"))
+        reason = job_stats.get("reason")
         self.session.commit()
 
         run = HarvestRun(kind="enrich", query=None, status="running")
@@ -583,7 +597,10 @@ class Harvester:
 
         try:
             pending = select_pending_titns(
-                self.session, limit=limit, after_titn=cursor_titn
+                self.session,
+                limit=limit,
+                after_titn=cursor_titn,
+                since=since,
             )
             for titn in pending:
                 started = time.monotonic()
@@ -634,6 +651,8 @@ class Harvester:
                         "processed": processed,
                         "errors": errors,
                         "failed": failed,
+                        **({"since": since.isoformat()} if since else {}),
+                        **({"reason": reason} if reason else {}),
                         **self._opac_metrics(),
                     },
                 )
@@ -647,6 +666,8 @@ class Harvester:
                 "failed": failed,
                 "cursor_titn": last_titn,
                 "processed_titns": processed_titns,
+                **({"since": since.isoformat()} if since else {}),
+                **({"reason": reason} if reason else {}),
                 **self._opac_metrics(),
             }
             run.status = "finished"
@@ -686,6 +707,9 @@ class Harvester:
         else:
             cursor_doc = cursor_doc if cursor_doc is not None else job.cursor_doc
             cursor_titn = cursor_titn if cursor_titn is not None else job.cursor_titn
+        job_stats = dict(job.stats or {})
+        mode = str(job_stats.get("mode") or "full")
+        reason = job_stats.get("reason")
         self.session.commit()
 
         started_at = datetime.now(UTC)
@@ -776,6 +800,8 @@ class Harvester:
                         "processed": processed,
                         "pages": pages,
                         "errors": errors,
+                        "mode": mode,
+                        **({"reason": reason} if reason else {}),
                         **self._opac_metrics(),
                     },
                 )
@@ -795,6 +821,8 @@ class Harvester:
                 "errors": errors,
                 "missing": missing,
                 "processed_titns": sorted(seen),
+                "mode": mode,
+                **({"reason": reason} if reason else {}),
                 **self._opac_metrics(),
             }
             run.status = "finished"

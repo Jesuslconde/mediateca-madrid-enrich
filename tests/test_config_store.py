@@ -39,6 +39,15 @@ def test_el_modelo_crea_la_tabla_app_config() -> None:
     assert inspect(engine).has_table("app_config")
 
 
+def test_la_tabla_ausente_no_rompe_la_lectura(monkeypatch) -> None:
+    session, engine = _session()
+    AppConfig.__table__.drop(engine)
+    monkeypatch.setattr(settings, "flaresolverr_url", "http://env:8191")
+
+    assert get_config_value(session, FLARESOLVERR_URL_KEY) is None
+    assert effective_flaresolverr_url(session) == "http://env:8191"
+
+
 def test_normaliza_urls_validas() -> None:
     assert normalize_flaresolverr_url(" http://localhost:8191/ ") == (
         "http://localhost:8191"

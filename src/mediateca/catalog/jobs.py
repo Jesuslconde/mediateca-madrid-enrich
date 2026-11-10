@@ -4,7 +4,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from mediateca.core.config import settings
 from mediateca.core.config_store import effective_flaresolverr_url
 from mediateca.core.logging import get_logger
+from mediateca.core.scheduling import last_completed_discover, load_schedule_settings
 
 logger = get_logger(__name__)
 
@@ -87,6 +88,100 @@ def create_job(
     session.add(job)
     session.flush()
     return job
+
+
+class JobAlreadyActive(RuntimeError):
+    pass
+
+
+def has_active_job(session: Session, job_type: str) -> bool:
+    total = session.scalar(
+        select(func.count(HarvestJob.id)).where(
+            HarvestJob.job_type == job_type,
+            HarvestJob.status.in_(("pending", "running")),
+        )
+    )
+    return bool(total)
+
+
+def enqueue_job(
+    session: Session,
+    job_type: str,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    cursor_doc: int | None = None,
+    cursor_titn: str | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    stats: dict | None = None,
+    dedupe: bool = True,
+) -> HarvestJob:
+    if job_type not in JOB_TYPES:
+        raise ValueError(f"Tipo de trabajo no valido: {job_type}")
+    if dedupe and has_active_job(session, job_type):
+        raise JobAlreadyActive(
+            f"Ya hay un trabajo de tipo '{job_type}' pendiente o en ejecucion"
+        )
+    job = create_job(
+        session,
+        job_type,
+        batch_size=batch_size,
+        cursor_doc=cursor_doc,
+        cursor_titn=cursor_titn,
+        max_attempts=max_attempts,
+        stats=stats,
+    )
+    session.flush()
+    return job
+
+
+def enqueue_discover_job(
+    session: Session,
+    *,
+    mode: str = "incremental",
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    reason: str = "manual",
+) -> HarvestJob:
+    if mode not in {"incremental", "full"}:
+        raise ValueError("El modo de descubrimiento debe ser incremental o full")
+    cursor_doc: int | None = None
+    cursor_titn: str | None = None
+    if mode == "incremental":
+        last = last_completed_discover(session)
+        if last is None or (last.cursor_doc is None and last.cursor_titn is None):
+            mode = "full"
+        else:
+            cursor_doc = last.cursor_doc
+            cursor_titn = last.cursor_titn
+    return enqueue_job(
+        session,
+        "discover",
+        batch_size=batch_size,
+        cursor_doc=cursor_doc,
+        cursor_titn=cursor_titn,
+        stats={"mode": mode, "reason": reason},
+    )
+
+
+def enqueue_enrich_job(
+    session: Session,
+    *,
+    since: datetime | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    reason: str = "manual",
+) -> HarvestJob:
+    stats: dict[str, object] = {"reason": reason}
+    if since is not None:
+        stats["since"] = since.isoformat()
+    return enqueue_job(
+        session,
+        "enrich",
+        batch_size=batch_size,
+        stats=stats,
+    )
+
+
+def enqueue_index_job(session: Session) -> HarvestJob:
+    return enqueue_job(session, "index")
 
 
 def claim_job(
@@ -175,6 +270,52 @@ def requeue_job(
     if error is not None:
         job.error = error
     session.flush()
+
+
+def recover_stale_jobs(
+    session: Session,
+    *,
+    stale_seconds: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    current = now or _now()
+    stale = (
+        stale_seconds
+        if stale_seconds is not None
+        else settings.worker_stale_seconds
+    )
+    cutoff = current - timedelta(seconds=stale)
+    stmt = select(HarvestJob).where(
+        HarvestJob.status == "running",
+        or_(
+            HarvestJob.heartbeat_at.is_(None),
+            HarvestJob.heartbeat_at < cutoff,
+        ),
+    )
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+
+    jobs = list(session.scalars(stmt))
+    for job in jobs:
+        if (job.attempts or 0) >= (job.max_attempts or 1):
+            finish_job(
+                session,
+                job,
+                status="failed",
+                error="Heartbeat caducado; se agotaron los intentos",
+                now=current,
+            )
+        else:
+            requeue_job(
+                session,
+                job,
+                error="Heartbeat caducado; trabajo reencolado",
+                now=current,
+            )
+    if jobs:
+        logger.warning("Trabajos estancados recuperados: %s", len(jobs))
+    return len(jobs)
 
 
 def create_stub(
@@ -411,6 +552,44 @@ def _index_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     return {"indexed": total}
 
 
+def _enqueue_enrich_after_discover(
+    session: Session, job: HarvestJob, stats: dict[str, Any]
+) -> None:
+    if int(stats.get("processed", 0) or 0) <= 0:
+        return
+    since = job.started_at or job.created_at
+    schedule = load_schedule_settings(session)
+    try:
+        enqueued = enqueue_enrich_job(
+            session,
+            since=since,
+            batch_size=schedule.enrich_batch_size,
+            reason="after_discover",
+        )
+        session.commit()
+    except JobAlreadyActive:
+        logger.info(
+            "Ya hay un trabajo de enriquecimiento activo; no se encola otro",
+            extra={"job_id": job.id, "job_type": job.job_type},
+        )
+    except Exception:  # noqa: BLE001
+        session.rollback()
+        logger.exception(
+            "No se pudo encolar el enriquecimiento posterior al descubrimiento",
+            extra={"job_id": job.id, "job_type": job.job_type},
+        )
+    else:
+        logger.info(
+            "Enriquecimiento encolado tras el descubrimiento",
+            extra={
+                "job_id": job.id,
+                "job_type": job.job_type,
+                "enqueued_job_id": enqueued.id,
+                "since": since.isoformat() if since else None,
+            },
+        )
+
+
 def _discover_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.harvester import Harvester, OpacClient
 
@@ -419,6 +598,7 @@ def _discover_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
         harvester = Harvester(session, client=client)
         stats = harvester.harvest_discovery(job=job)
     _index_titns_for_job(session, job, stats.get("processed_titns", []))
+    _enqueue_enrich_after_discover(session, job, stats)
     return stats
 
 
@@ -494,6 +674,7 @@ def worker_tick(
     heartbeat_seconds: float = 0.0,
     heartbeat_file: Path | None = None,
 ) -> tuple[HarvestJob | None, float]:
+    recover_stale_jobs(session)
     job = claim_job(session)
     if job is None:
         session.commit()
