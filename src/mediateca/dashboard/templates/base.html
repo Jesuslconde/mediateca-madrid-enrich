@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if refresh_seconds %}<meta http-equiv="refresh" content="{{ refresh_seconds }}">{% endif %}
+    <title>Mediateca Madrid - Estado de la ingesta</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f8; color: #1c2430; }
+      .app { display: flex; min-height: 100vh; }
+      .sidebar { width: 240px; flex: 0 0 240px; background: #12355b; color: #fff; padding: 1.25rem 1rem; display: flex; flex-direction: column; gap: 1rem; }
+      .sidebar h1 { margin: 0; font-size: 1.15rem; }
+      .sidebar .subtitle { margin: .25rem 0 0; color: #c9d8e8; font-size: .85rem; }
+      .nav { display: flex; flex-direction: column; gap: .25rem; }
+      .nav a { color: #dbe7f3; text-decoration: none; padding: .55rem .75rem; border-radius: 6px; }
+      .nav a:hover { background: rgba(255,255,255,.08); }
+      .nav a.active { background: #fff; color: #12355b; font-weight: 700; }
+      .admin-panel { margin-top: auto; border-top: 1px solid rgba(255,255,255,.2); padding-top: 1rem; font-size: .85rem; }
+      .admin-panel p { margin: 0 0 .5rem; }
+      .admin-panel form { display: flex; flex-direction: column; gap: .45rem; margin: 0; }
+      .admin-panel input[type="password"] { width: 100%; box-sizing: border-box; }
+      .main { flex: 1; min-width: 0; }
+      .content { max-width: 1200px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
+      .topbar { color: #5d6b7a; font-size: .9rem; margin-bottom: .5rem; }
+      section { background: #fff; border: 1px solid #dde3ea; border-radius: 8px; padding: 1rem 1.25rem; margin-top: 1rem; }
+      h2 { margin: 0 0 .75rem; font-size: 1.05rem; }
+      .muted { color: #5d6b7a; font-size: .9rem; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; }
+      .metric { background: #f9fafb; border: 1px solid #e5e9ef; border-radius: 6px; padding: .75rem; }
+      .metric strong { display: block; font-size: 1.5rem; }
+      .ok { color: #126b3a; font-weight: 600; }
+      .degraded { color: #a23014; font-weight: 600; }
+      table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+      th, td { text-align: left; padding: .5rem; border-bottom: 1px solid #e5e9ef; vertical-align: top; }
+      th { background: #f4f6f8; }
+      .error { color: #a23014; overflow-wrap: anywhere; }
+      form { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .5rem; }
+      input[type="url"], input[type="number"], input[type="password"] { min-width: 90px; padding: .45rem .6rem; border: 1px solid #cfd6df; border-radius: 6px; }
+      input[type="url"] { min-width: 320px; }
+      button { padding: .45rem .8rem; border: 0; border-radius: 6px; background: #12355b; color: #fff; cursor: pointer; }
+      button:disabled { background: #9aa7b5; cursor: not-allowed; }
+      .actions { display: flex; gap: .75rem; flex-wrap: wrap; align-items: flex-end; }
+      .actions form { margin-top: 0; }
+      @media (max-width: 760px) {
+        .app { flex-direction: column; }
+        .sidebar { width: auto; flex: none; }
+        .nav { flex-direction: row; flex-wrap: wrap; }
+        .admin-panel { margin-top: 0; }
+        .content { padding: 1rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div>
+          <h1>Mediateca Madrid</h1>
+          <p class="subtitle">Estado de la ingesta</p>
+        </div>
+        <nav class="nav" aria-label="Navegacion principal">
+          <a href="/" class="nav-link {{ 'active' if section == 'inicio' else '' }}" {% if section == 'inicio' %}aria-current="page"{% endif %}>Inicio</a>
+          <a href="/tareas" class="nav-link {{ 'active' if section == 'tareas' else '' }}" {% if section == 'tareas' %}aria-current="page"{% endif %}>Tareas</a>
+          <a href="/configuracion" class="nav-link {{ 'active' if section == 'configuracion' else '' }}" {% if section == 'configuracion' %}aria-current="page"{% endif %}>Configuracion</a>
+        </nav>
+        <div class="admin-panel">
+          {% if admin_required and not is_admin %}
+            <p>Administracion bloqueada.</p>
+            <form method="post" action="/admin/login">
+              <input type="hidden" name="next" value="{{ request.url.path }}">
+              <input type="password" name="token" placeholder="Token de administracion" required>
+              <button type="submit">Desbloquear</button>
+            </form>
+          {% elif is_admin %}
+            <p class="ok">Sesion de administracion activa.</p>
+            <form method="post" action="/admin/logout">
+              <input type="hidden" name="next" value="{{ request.url.path }}">
+              <button type="submit">Cerrar sesion</button>
+            </form>
+          {% else %}
+            <p>No hay token configurado; las acciones de escritura estan abiertas.</p>
+          {% endif %}
+        </div>
+      </aside>
+      <main class="main">
+        <div class="content">
+          <p class="topbar">
+            Actualizado {{ generated_at.strftime('%Y-%m-%d %H:%M:%S %Z') }}
+            {% if refresh_seconds %} · Se actualiza cada {{ refresh_seconds }} s{% else %} · Sin refresco automatico{% endif %}
+          </p>
+          {% if message %}<p class="ok">{{ message }}</p>{% endif %}
+          {% if error %}<p class="error">{{ error }}</p>{% endif %}
+          {% block content %}{% endblock %}
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

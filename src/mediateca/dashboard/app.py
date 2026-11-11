@@ -27,8 +27,10 @@ from mediateca.catalog.repository import count_pending_titns
 from mediateca.core.config import settings
 from mediateca.core.config_store import (
     FLARESOLVERR_URL_KEY,
+    TMDB_API_TOKEN_KEY,
     ConfigValidationError,
     normalize_flaresolverr_url,
+    normalize_tmdb_api_token,
     set_config_value,
 )
 from mediateca.core.db import get_session_factory
@@ -48,6 +50,7 @@ from .queries import (
     job_status_counts,
     job_type_counts,
     recent_jobs,
+    tmdb_config,
     worker_health,
 )
 
@@ -63,6 +66,7 @@ DEGRADED_MESSAGE = (
 
 ADMIN_COOKIE = "mediateca_admin"
 ADMIN_COOKIE_MAX_AGE = 8 * 60 * 60
+NEXT_PATHS = {"/", "/tareas", "/configuracion"}
 
 
 def _has_write_access(request: Request) -> bool:
@@ -73,10 +77,30 @@ def _has_write_access(request: Request) -> bool:
     return provided == token
 
 
-def _admin_error() -> RedirectResponse:
-    return RedirectResponse(
-        f"/?{urlencode({'error': 'Token de administracion requerido o incorrecto'})}",
-        status_code=303,
+def _safe_next(value: str | None, default: str = "/") -> str:
+    candidate = (value or "").strip()
+    return candidate if candidate in NEXT_PATHS else default
+
+
+def _redirect_with(
+    path: str,
+    *,
+    message: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    params: dict[str, str] = {}
+    if message:
+        params["message"] = message
+    if error:
+        params["error"] = error
+    query = f"?{urlencode(params)}" if params else ""
+    return RedirectResponse(f"{path}{query}", status_code=303)
+
+
+def _admin_error(next_path: str | None = None) -> RedirectResponse:
+    return _redirect_with(
+        _safe_next(next_path),
+        error="Token de administracion requerido o incorrecto",
     )
 
 
@@ -103,25 +127,78 @@ def get_session() -> Generator[Session, None, None]:
         session.close()
 
 
-def _dashboard_context(session: Session) -> dict[str, Any]:
-    cover = catalog_coverage(session)
-    schedule = load_schedule_settings(session)
+def _base_context(
+    request: Request, section: str, *, refresh_seconds: int | None
+) -> dict[str, Any]:
     return {
-        "refresh_seconds": settings.dashboard_refresh_seconds,
-        "status_counts": job_status_counts(session),
-        "type_counts": job_type_counts(session),
-        "jobs": recent_jobs(session),
-        "coverage": cover,
-        "enrichment_percent": enrichment_percentage(cover),
-        "metrics": ingest_metrics(session, cover),
-        "worker": worker_health(session),
-        "flaresolverr": flaresolverr_config(session),
-        "schedule": schedule,
-        "schedule_status": build_schedule_status(session, schedule),
-        "active_jobs": {job_type: has_active_job(session, job_type) for job_type in JOB_TYPES},
-        "pending_titns": count_pending_titns(session),
+        "section": section,
+        "refresh_seconds": refresh_seconds,
         "generated_at": datetime.now(UTC),
+        "admin_required": bool(settings.dashboard_admin_token),
+        "is_admin": _has_write_access(request),
+        "message": request.query_params.get("message"),
+        "error": request.query_params.get("error"),
     }
+
+
+def _inicio_context(request: Request, session: Session) -> dict[str, Any]:
+    cover = catalog_coverage(session)
+    context = _base_context(
+        request, "inicio", refresh_seconds=settings.dashboard_refresh_seconds
+    )
+    context.update(
+        {
+            "status_counts": job_status_counts(session),
+            "type_counts": job_type_counts(session),
+            "coverage": cover,
+            "enrichment_percent": enrichment_percentage(cover),
+            "metrics": ingest_metrics(session, cover),
+            "worker": worker_health(session),
+        }
+    )
+    return context
+
+
+def _tareas_context(request: Request, session: Session) -> dict[str, Any]:
+    context = _base_context(
+        request, "tareas", refresh_seconds=settings.dashboard_refresh_seconds
+    )
+    context.update(
+        {
+            "jobs": recent_jobs(session),
+            "active_jobs": {
+                job_type: has_active_job(session, job_type) for job_type in JOB_TYPES
+            },
+        }
+    )
+    return context
+
+
+def _configuracion_context(request: Request, session: Session) -> dict[str, Any]:
+    schedule = load_schedule_settings(session)
+    context = _base_context(request, "configuracion", refresh_seconds=None)
+    context.update(
+        {
+            "schedule": schedule,
+            "schedule_status": build_schedule_status(session, schedule),
+            "pending_titns": count_pending_titns(session),
+            "flaresolverr": flaresolverr_config(session),
+            "tmdb": tmdb_config(session),
+        }
+    )
+    return context
+
+
+def _degraded(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="degraded.html",
+        context={
+            "message": DEGRADED_MESSAGE,
+            "refresh_seconds": settings.dashboard_refresh_seconds,
+            "generated_at": datetime.now(UTC),
+        },
+    )
 
 
 app = FastAPI(
@@ -136,25 +213,45 @@ def dashboard(
     request: Request, session: Session = Depends(get_session)
 ) -> HTMLResponse:
     try:
-        context = _dashboard_context(session)
+        context = _inicio_context(request, session)
     except SQLAlchemyError:
         logger.exception("No se pudo leer el estado de la ingesta")
-        return templates.TemplateResponse(
-            request=request,
-            name="degraded.html",
-            context={
-                "message": DEGRADED_MESSAGE,
-                "refresh_seconds": settings.dashboard_refresh_seconds,
-                "generated_at": datetime.now(UTC),
-            },
-        )
-    context["message"] = request.query_params.get("message")
-    context["error"] = request.query_params.get("error")
-    context["admin_required"] = bool(settings.dashboard_admin_token)
-    context["is_admin"] = _has_write_access(request)
+        return _degraded(request)
     return templates.TemplateResponse(
         request=request,
-        name="dashboard.html",
+        name="inicio.html",
+        context=context,
+    )
+
+
+@app.get("/tareas", response_class=HTMLResponse)
+def tareas(
+    request: Request, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    try:
+        context = _tareas_context(request, session)
+    except SQLAlchemyError:
+        logger.exception("No se pudo leer los trabajos de la ingesta")
+        return _degraded(request)
+    return templates.TemplateResponse(
+        request=request,
+        name="tareas.html",
+        context=context,
+    )
+
+
+@app.get("/configuracion", response_class=HTMLResponse)
+def configuracion(
+    request: Request, session: Session = Depends(get_session)
+) -> HTMLResponse:
+    try:
+        context = _configuracion_context(request, session)
+    except SQLAlchemyError:
+        logger.exception("No se pudo leer la configuracion de la ingesta")
+        return _degraded(request)
+    return templates.TemplateResponse(
+        request=request,
+        name="configuracion.html",
         context=context,
     )
 
@@ -163,16 +260,17 @@ def dashboard(
 async def admin_login(
     request: Request,
 ) -> RedirectResponse:
-    if not settings.dashboard_admin_token:
-        return RedirectResponse(
-            f"/?{urlencode({'error': 'No hay token de administracion configurado'})}",
-            status_code=303,
-        )
     values = await _form_values(request)
+    next_path = _safe_next((values.get("next") or [""])[0], "/")
+    if not settings.dashboard_admin_token:
+        return _redirect_with(
+            next_path,
+            error="No hay token de administracion configurado",
+        )
     token = (values.get("token") or [""])[0].strip()
     if token != settings.dashboard_admin_token:
-        return _admin_error()
-    response = RedirectResponse("/", status_code=303)
+        return _admin_error(next_path)
+    response = RedirectResponse(next_path, status_code=303)
     response.set_cookie(
         ADMIN_COOKIE,
         token,
@@ -184,8 +282,10 @@ async def admin_login(
 
 
 @app.post("/admin/logout")
-async def admin_logout() -> RedirectResponse:
-    response = RedirectResponse("/", status_code=303)
+async def admin_logout(request: Request) -> RedirectResponse:
+    values = await _form_values(request)
+    next_path = _safe_next((values.get("next") or [""])[0], "/")
+    response = RedirectResponse(next_path, status_code=303)
     response.delete_cookie(ADMIN_COOKIE)
     return response
 
@@ -195,9 +295,10 @@ async def save_schedule_config(
     request: Request,
     session: Session = Depends(get_session),
 ) -> RedirectResponse:
-    if not _has_write_access(request):
-        return _admin_error()
     values = await _form_values(request)
+    next_path = _safe_next((values.get("next") or [""])[0], "/configuracion")
+    if not _has_write_access(request):
+        return _admin_error(next_path)
     try:
         schedule = ScheduleSettings(
             enabled=(values.get("enabled") or ["false"])[0].lower()
@@ -215,21 +316,15 @@ async def save_schedule_config(
         session.commit()
     except ScheduleValidationError as exc:
         session.rollback()
-        return RedirectResponse(
-            f"/?{urlencode({'error': str(exc)})}",
-            status_code=303,
-        )
+        return _redirect_with(next_path, error=str(exc))
     except SQLAlchemyError:
         session.rollback()
         logger.exception("No se pudo guardar la programacion de ingesta")
-        return RedirectResponse(
-            f"/?{urlencode({'error': 'No se pudo guardar la programacion de ingesta'})}",
-            status_code=303,
+        return _redirect_with(
+            next_path,
+            error="No se pudo guardar la programacion de ingesta",
         )
-    return RedirectResponse(
-        f"/?{urlencode({'message': 'Programacion guardada'})}",
-        status_code=303,
-    )
+    return _redirect_with(next_path, message="Programacion guardada")
 
 
 @app.post("/jobs")
@@ -237,9 +332,10 @@ async def enqueue_job_from_dashboard(
     request: Request,
     session: Session = Depends(get_session),
 ) -> RedirectResponse:
-    if not _has_write_access(request):
-        return _admin_error()
     values = await _form_values(request)
+    next_path = _safe_next((values.get("next") or [""])[0], "/tareas")
+    if not _has_write_access(request):
+        return _admin_error(next_path)
     job_type = (values.get("job_type") or [""])[0].strip()
     try:
         if job_type == "discover":
@@ -262,20 +358,14 @@ async def enqueue_job_from_dashboard(
         session.commit()
     except JobAlreadyActive as exc:
         session.rollback()
-        return RedirectResponse(
-            f"/?{urlencode({'error': str(exc)})}",
-            status_code=303,
-        )
+        return _redirect_with(next_path, error=str(exc))
     except (ValueError, SQLAlchemyError) as exc:
         session.rollback()
         logger.exception("No se pudo encolar el trabajo desde el dashboard")
-        return RedirectResponse(
-            f"/?{urlencode({'error': str(exc)})}",
-            status_code=303,
-        )
-    return RedirectResponse(
-        f"/?{urlencode({'message': f'Trabajo {job.id} ({job.job_type}) encolado'})}",
-        status_code=303,
+        return _redirect_with(next_path, error=str(exc))
+    return _redirect_with(
+        next_path,
+        message=f"Trabajo {job.id} ({job.job_type}) encolado",
     )
 
 
@@ -284,9 +374,10 @@ async def save_flaresolverr_config(
     request: Request,
     session: Session = Depends(get_session),
 ) -> RedirectResponse:
-    if not _has_write_access(request):
-        return _admin_error()
     values = await _form_values(request)
+    next_path = _safe_next((values.get("next") or [""])[0], "/configuracion")
+    if not _has_write_access(request):
+        return _admin_error(next_path)
     url = (values.get("url") or [""])[0]
 
     try:
@@ -295,16 +386,13 @@ async def save_flaresolverr_config(
         session.commit()
     except ConfigValidationError as exc:
         session.rollback()
-        return RedirectResponse(
-            f"/?{urlencode({'error': str(exc)})}",
-            status_code=303,
-        )
+        return _redirect_with(next_path, error=str(exc))
     except SQLAlchemyError:
         session.rollback()
         logger.exception("No se pudo guardar la configuracion de FlareSolverr")
-        return RedirectResponse(
-            f"/?{urlencode({'error': 'No se pudo guardar la configuracion de FlareSolverr'})}",
-            status_code=303,
+        return _redirect_with(
+            next_path,
+            error="No se pudo guardar la configuracion de FlareSolverr",
         )
 
     message = (
@@ -312,7 +400,52 @@ async def save_flaresolverr_config(
         if normalized
         else "Configuracion de FlareSolverr eliminada"
     )
-    return RedirectResponse(f"/?{urlencode({'message': message})}", status_code=303)
+    return _redirect_with(next_path, message=message)
+
+
+@app.post("/config/tmdb")
+async def save_tmdb_config(
+    request: Request,
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    values = await _form_values(request)
+    next_path = _safe_next((values.get("next") or [""])[0], "/configuracion")
+    if not _has_write_access(request):
+        return _admin_error(next_path)
+    token = (values.get("token") or [""])[0]
+    clear = (values.get("clear") or ["false"])[0].lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+        "si",
+        "sí",
+    }
+
+    try:
+        if clear:
+            set_config_value(session, TMDB_API_TOKEN_KEY, None)
+            message = "Configuracion de TMDB eliminada"
+        else:
+            normalized = normalize_tmdb_api_token(token)
+            if normalized:
+                set_config_value(session, TMDB_API_TOKEN_KEY, normalized)
+                message = "Configuracion de TMDB guardada"
+            else:
+                message = "No se ha modificado la configuracion de TMDB"
+        session.commit()
+    except ConfigValidationError as exc:
+        session.rollback()
+        return _redirect_with(next_path, error=str(exc))
+    except SQLAlchemyError:
+        session.rollback()
+        logger.exception("No se pudo guardar la configuracion de TMDB")
+        return _redirect_with(
+            next_path,
+            error="No se pudo guardar la configuracion de TMDB",
+        )
+
+    return _redirect_with(next_path, message=message)
 
 
 @app.get("/health")

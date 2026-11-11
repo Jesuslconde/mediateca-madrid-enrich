@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, selectinload
 from mediateca.core.config import settings
 from mediateca.core.search import get_index, get_meili_client
 
-FACET_FIELDS = ["soportes", "generos", "anio", "idioma", "bibliotecas"]
+FACET_FIELDS = ["soportes", "generos", "anio", "idioma", "paises_origen", "bibliotecas"]
 
 FILTERABLE_ATTRIBUTES = [
     "soportes",
@@ -25,6 +25,7 @@ FILTERABLE_ATTRIBUTES = [
     "anio",
     "idioma",
     "pais",
+    "paises_origen",
     "bibliotecas",
     "edad_recomendada",
     "duracion_min",
@@ -95,6 +96,7 @@ def build_document(edicion: Edicion) -> dict[str, Any]:
         "anio": edicion.anio,
         "idioma": edicion.idioma,
         "pais": edicion.pais,
+        "paises_origen": edicion.paises_origen or [],
         "duracion_min": edicion.duracion_min,
         "edad_recomendada": edicion.edad_recomendada,
         "sinopsis": edicion.sinopsis,
@@ -129,6 +131,7 @@ def build_filters(
     anio_desde: int | None = None,
     anio_hasta: int | None = None,
     idioma: str | None = None,
+    paises_origen: list[str] | None = None,
     biblioteca: str | None = None,
 ) -> str | None:
     filters: list[str] = []
@@ -141,6 +144,12 @@ def build_filters(
         filters.append(f"generos = {_quote(genero)}")
     if idioma:
         filters.append(f"idioma = {_quote(idioma)}")
+    if paises_origen:
+        filters.append(
+            "("
+            + " OR ".join(f"paises_origen = {_quote(item)}" for item in paises_origen)
+            + ")"
+        )
     if biblioteca:
         filters.append(f"bibliotecas = {_quote(biblioteca)}")
     if anio_desde is not None:
@@ -252,6 +261,7 @@ class MeiliIndexer:
         anio_desde: int | None = None,
         anio_hasta: int | None = None,
         idioma: str | None = None,
+        paises_origen: list[str] | None = None,
         biblioteca: str | None = None,
         sort: str | None = None,
         page: int = 1,
@@ -263,6 +273,7 @@ class MeiliIndexer:
             anio_desde=anio_desde,
             anio_hasta=anio_hasta,
             idioma=idioma,
+            paises_origen=paises_origen,
             biblioteca=biblioteca,
         )
         options: dict[str, Any] = {

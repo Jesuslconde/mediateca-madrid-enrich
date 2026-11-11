@@ -60,6 +60,29 @@ A 1 peticion por segundo, un lote de 5.000 fichas tarda aproximadamente 1,4 hora
 la primera pasada completa de 67.215 fichas requiere unas 14 ejecuciones nocturnas.
 El tamano del lote y el retardo son configurables desde `mediateca enrich`.
 
+## Campos de enriquecimiento TMDB
+
+La edicion conserva `pais` con el codigo del MARC del OPAC y añade
+`paises_origen` con la lista de codigos ISO 3166-1 alfa-2 obtenida de TMDB,
+`tmdb_id` y `tmdb_enriched_at`. La migracion `scripts/migrate_tmdb.sql` crea las
+columnas de forma idempotente, indexa `tmdb_enriched_at` y actualiza
+`schema_meta.schema_version` a `2`.
+
+## Consulta a TMDB
+
+Cuando existe un token efectivo (guardado en `app_config` o en
+`MEDIATECA_TMDB_API_TOKEN`), el enriquecimiento consulta `/3/search/movie` con el
+titulo y el ano de la edicion y, si hay una coincidencia fiable, `/3/movie/{id}`
+para leer `production_countries` con respaldo de `origin_country`. El token puede
+ser una API Key v3, enviada como `api_key`, o un Read Access Token v4, enviado
+como `Authorization: Bearer`; el formato se detecta por la forma del token.
+
+El emparejamiento normaliza titulos y exige un ano dentro de +-1 y una similitud
+de al menos 0,90, o coincidencia exacta si la edicion no tiene ano. Los paises se
+normalizan a codigos ISO 3166-1 alfa-2 en mayusculas y se deduplican. El cliente
+aplica el retardo configurado, respeta `Retry-After` y reintenta errores
+temporales con backoff. El token nunca se registra en logs.
+
 ## Cursor, reintentos y errores
 
 El trabajo `enrich` guarda el ultimo `TITN` procesado en `cursor_titn` y actualiza
@@ -91,6 +114,11 @@ sin `detail_fetched_at` se indexa como stub con `detail_complete=false`; al
 enriquecerse se actualiza con `detail_complete=true` y los nuevos campos. Ambos
 campos son filtrables. La API publica del portal aplica siempre
 `detail_complete = true`, de modo que la web solo muestra fichas enriquecidas.
+
+`paises_origen` se incluye en cada documento como lista (vacia si no hay TMDB),
+es filtrable y se devuelve como faceta. Los TITN procesados por un lote se
+indexan de forma incremental; tras un cambio de esquema o al anadir el campo a un
+indice existente se ejecuta `mediateca index --reset` para reconstruirlo.
 
 Si un lote falla antes de terminar, el worker indexa igualmente los `TITN` que ya
 habia procesado. Ademas, el scheduler encola una reindexacion de reconciliacion
@@ -163,6 +191,21 @@ El dashboard permite encolar `discover`, `enrich` e `index` bajo demanda y edita
 la programacion. Las acciones de escritura se protegen con
 `MEDIATECA_DASHBOARD_ADMIN_TOKEN`: el operador introduce el token una vez y se
 guarda en una cookie `HttpOnly` con `SameSite=Strict`.
+
+## Dashboard de administracion
+
+El dashboard sirve tres paginas con un menu lateral comun: Inicio (`/`), Tareas
+(`/tareas`) y Configuracion (`/configuracion`). Inicio muestra la salud del
+worker, el resumen de trabajos por estado y tipo, la cobertura y las metricas.
+Tareas muestra la tabla de trabajos recientes y las acciones de descubrimiento,
+enriquecimiento e indexacion. Configuracion agrupa la programacion, la URL de
+FlareSolverr y el token de TMDB.
+
+Inicio y Tareas incluyen `meta http-equiv="refresh"`; Configuracion no lo incluye
+para no perder los formularios. Las rutas POST conservan su URL y redirigen a la
+pagina de origen con `message` o `error`; el campo `next` se valida contra `/`,
+`/tareas` y `/configuracion`. El estado de administracion y el login/logout viven
+en el menu lateral.
 
 ## Observabilidad de la ingesta
 

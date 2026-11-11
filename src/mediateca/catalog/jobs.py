@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from mediateca.core.config import settings
-from mediateca.core.config_store import effective_flaresolverr_url
+from mediateca.core.config_store import effective_flaresolverr_url, effective_tmdb_api_token
 from mediateca.core.logging import get_logger
 from mediateca.core.scheduling import last_completed_discover, load_schedule_settings
 
@@ -621,17 +621,33 @@ def _discover_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     return stats
 
 
+def build_tmdb_client(session: Session, *, delay: float | None = None):
+    from mediateca.catalog.tmdb import TmdbClient
+
+    token = effective_tmdb_api_token(session)
+    return TmdbClient(token, delay=delay) if token else None
+
+
 def _enrich_handler(session: Session, job: HarvestJob) -> dict[str, Any]:
     from mediateca.catalog.harvester import Harvester, OpacClient
 
     _flush_pending_index(session, job)
-    with OpacClient(flaresolverr_url=effective_flaresolverr_url(session)) as client:
-        harvester = Harvester(session, client=client)
-        try:
-            stats = harvester.harvest_enrichment(job=job)
-        except Exception:
-            _index_processed_after_failure(session, job, harvester.processed_titns)
-            raise
+    tmdb_client = build_tmdb_client(session)
+    try:
+        with OpacClient(flaresolverr_url=effective_flaresolverr_url(session)) as client:
+            harvester = Harvester(
+                session,
+                client=client,
+                tmdb_client=tmdb_client,
+            )
+            try:
+                stats = harvester.harvest_enrichment(job=job)
+            except Exception:
+                _index_processed_after_failure(session, job, harvester.processed_titns)
+                raise
+    finally:
+        if tmdb_client is not None:
+            tmdb_client.close()
     _index_titns_for_job(session, job, stats.get("processed_titns", []))
     return stats
 

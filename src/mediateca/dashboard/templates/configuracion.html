@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h2>Programacion</h2>
+    <p>
+      Estado:
+      <span class="{{ 'ok' if schedule.enabled else 'degraded' }}">{{ 'activa' if schedule.enabled else 'desactivada' }}</span>
+      | Pendientes de enriquecer: {{ pending_titns }}
+    </p>
+    <div class="grid">
+      <div class="metric">
+        <span class="muted">Descubrimiento</span>
+        <strong>{{ 'cada ' ~ schedule.discover_interval_hours ~ ' h' }}</strong>
+        <span class="muted">Ultima: {{ schedule_status.discover.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.discover.last_run else 'nunca' }}</span>
+        <span class="muted">Proxima: {{ schedule_status.discover.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.discover.next_run else '—' }}</span>
+      </div>
+      <div class="metric">
+        <span class="muted">Barrido completo</span>
+        <strong>{{ ('cada ' ~ schedule.full_sweep_interval_hours ~ ' h') if schedule.full_sweep_interval_hours else 'desactivado' }}</strong>
+        <span class="muted">Ultima: {{ schedule_status.full_sweep.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.full_sweep.last_run else 'nunca' }}</span>
+        <span class="muted">Proxima: {{ schedule_status.full_sweep.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.full_sweep.next_run else '—' }}</span>
+      </div>
+      <div class="metric">
+        <span class="muted">Enriquecimiento</span>
+        <strong>{{ 'cada ' ~ schedule.enrich_interval_hours ~ ' h' }}</strong>
+        <span class="muted">Ultima: {{ schedule_status.enrich.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.enrich.last_run else 'nunca' }}</span>
+        <span class="muted">Proxima: {{ schedule_status.enrich.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.enrich.next_run else '—' }}</span>
+      </div>
+      <div class="metric">
+        <span class="muted">Reconciliacion del indice</span>
+        <strong>{{ 'cada ' ~ schedule.index_interval_hours ~ ' h' }}</strong>
+        <span class="muted">Ultima: {{ schedule_status.index.last_run.strftime('%Y-%m-%d %H:%M') if schedule_status.index.last_run else 'nunca' }}</span>
+        <span class="muted">Proxima: {{ schedule_status.index.next_run.strftime('%Y-%m-%d %H:%M') if schedule_status.index.next_run else '—' }}</span>
+      </div>
+    </div>
+    {% if is_admin %}
+      <form method="post" action="/config/schedule">
+        <input type="hidden" name="next" value="/configuracion">
+        <label><input type="checkbox" name="enabled" value="true" {% if schedule.enabled %}checked{% endif %}> Activa</label>
+        <label>Descubrimiento cada <input type="number" name="discover_interval_hours" value="{{ schedule.discover_interval_hours }}" min="1" max="720"> h</label>
+        <label>Barrido completo cada <input type="number" name="full_sweep_interval_hours" value="{{ schedule.full_sweep_interval_hours }}" min="0" max="8760"> h</label>
+        <label>Enriquecimiento cada <input type="number" name="enrich_interval_hours" value="{{ schedule.enrich_interval_hours }}" min="1" max="720"> h</label>
+        <label>Lote de <input type="number" name="enrich_batch_size" value="{{ schedule.enrich_batch_size }}" min="1" max="50000"> fichas</label>
+        <label>Indexacion cada <input type="number" name="index_interval_hours" value="{{ schedule.index_interval_hours }}" min="1" max="8760"> h</label>
+        <label>Pausa tras captcha <input type="number" name="captcha_pause_minutes" value="{{ schedule.captcha_pause_minutes }}" min="1" max="1440"> min</label>
+        <button type="submit">Guardar programacion</button>
+      </form>
+    {% else %}
+      <p class="muted">Desbloquea la administracion para modificar la programacion.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Configuracion de FlareSolverr</h2>
+    <p>
+      Estado:
+      <span class="{{ 'ok' if flaresolverr.active else 'degraded' }}">{{ 'activa' if flaresolverr.active else 'desactivada' }}</span>
+      | Origen: {{ flaresolverr.source }}
+      | URL efectiva: {{ flaresolverr.effective_url or 'sin configurar' }}
+    </p>
+    {% if is_admin %}
+      <form method="post" action="/config/flaresolverr">
+        <input type="hidden" name="next" value="/configuracion">
+        <label for="flaresolverr-url">URL base</label>
+        <input id="flaresolverr-url" type="url" name="url" value="{{ flaresolverr.saved_url or '' }}" placeholder="http://flaresolverr:8191">
+        <button type="submit">Guardar</button>
+      </form>
+    {% else %}
+      <p class="muted">Desbloquea la administracion para modificar FlareSolverr.</p>
+    {% endif %}
+    <p class="muted">La configuracion guardada se aplica a los trabajos nuevos. Si el campo se deja vacio, se usa la variable de entorno o se desactiva.</p>
+  </section>
+
+  <section>
+    <h2>Configuracion de TMDB</h2>
+    <p>
+      Estado:
+      <span class="{{ 'ok' if tmdb.active else 'degraded' }}">{{ 'activa' if tmdb.active else 'desactivada' }}</span>
+      | Origen: {{ tmdb.source }}
+      | Token: {{ tmdb.masked_token or 'sin configurar' }}
+    </p>
+    {% if is_admin %}
+      <form method="post" action="/config/tmdb" autocomplete="off">
+        <input type="hidden" name="next" value="/configuracion">
+        <label for="tmdb-token">API Key o Read Access Token</label>
+        <input id="tmdb-token" type="password" name="token" value="" placeholder="Pega el token de TMDB" autocomplete="new-password">
+        {% if tmdb.saved %}
+          <label><input type="checkbox" name="clear" value="true"> Borrar token guardado</label>
+        {% endif %}
+        <button type="submit">Guardar</button>
+      </form>
+    {% else %}
+      <p class="muted">Desbloquea la administracion para modificar el token de TMDB.</p>
+    {% endif %}
+    <p class="muted">El token guardado prevalece sobre MEDIATECA_TMDB_API_TOKEN. Si el campo se deja vacio, se conserva el token actual; para borrarlo, marca la casilla. El token no se muestra completo ni se registra en logs.</p>
+  </section>
+{% endblock %}

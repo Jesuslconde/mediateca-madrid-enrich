@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 dependencies = [
-  "mediateca-shared==0.1.0",
+  "mediateca-shared==0.2.0",
   "sqlalchemy>=2.0.36",
   "psycopg[binary]>=3.2",
   "pydantic>=2.10",

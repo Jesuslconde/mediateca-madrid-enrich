@@ -10,10 +10,13 @@ from sqlalchemy.pool import StaticPool
 from mediateca.core.config import Settings, settings
 from mediateca.core.config_store import (
     FLARESOLVERR_URL_KEY,
+    TMDB_API_TOKEN_KEY,
     ConfigValidationError,
     effective_flaresolverr_url,
+    effective_tmdb_api_token,
     get_config_value,
     normalize_flaresolverr_url,
+    normalize_tmdb_api_token,
     set_config_value,
 )
 from mediateca.core.db import Base
@@ -140,3 +143,63 @@ def test_env_example_documenta_las_variables_de_flaresolverr() -> None:
 
     assert "MEDIATECA_FLARESOLVERR_URL=" in content
     assert "MEDIATECA_FLARESOLVERR_MAX_TIMEOUT_MS=60000" in content
+
+
+def test_normaliza_tokens_tmdb_validos() -> None:
+    v3 = "0123456789abcdef0123456789abcdef"
+    v4 = "eyJhbGciOiJIUzI1NiJ9.payload.signature"
+    assert normalize_tmdb_api_token(f" {v3} ") == v3
+    assert normalize_tmdb_api_token(v4) == v4
+    assert normalize_tmdb_api_token("") is None
+    assert normalize_tmdb_api_token(None) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "corto",
+        "token con espacios",
+        "token\ncon\ncontrol",
+        "token con ñ",
+        "a" * 513,
+    ],
+)
+def test_rechaza_tokens_tmdb_invalidos(value: str) -> None:
+    with pytest.raises(ConfigValidationError):
+        normalize_tmdb_api_token(value)
+
+
+def test_el_token_tmdb_persistido_prevalece_sobre_el_entorno(monkeypatch) -> None:
+    session, _ = _session()
+    monkeypatch.setattr(settings, "tmdb_api_token", "env-token-123456")
+
+    set_config_value(session, TMDB_API_TOKEN_KEY, "db-token-123456")
+    session.commit()
+    assert effective_tmdb_api_token(session) == "db-token-123456"
+
+    set_config_value(session, TMDB_API_TOKEN_KEY, None)
+    session.commit()
+    assert effective_tmdb_api_token(session) == "env-token-123456"
+
+    monkeypatch.setattr(settings, "tmdb_api_token", None)
+    assert effective_tmdb_api_token(session) is None
+
+
+def test_ignora_token_tmdb_persistido_invalido(monkeypatch) -> None:
+    session, _ = _session()
+    monkeypatch.setattr(settings, "tmdb_api_token", "env-token-123456")
+
+    set_config_value(session, TMDB_API_TOKEN_KEY, "token con espacios")
+    session.commit()
+
+    assert effective_tmdb_api_token(session) == "env-token-123456"
+
+
+def test_env_example_documenta_las_variables_de_tmdb() -> None:
+    content = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "MEDIATECA_TMDB_API_TOKEN=" in content
+    assert "MEDIATECA_TMDB_LANGUAGE=es-ES" in content
+    assert "MEDIATECA_TMDB_DELAY=0.25" in content
+    assert "MEDIATECA_TMDB_TIMEOUT=10" in content
+    assert "MEDIATECA_TMDB_MAX_RETRIES=3" in content

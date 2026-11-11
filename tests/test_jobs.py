@@ -210,7 +210,7 @@ def test_worker_ejecuta_el_handler_discover(monkeypatch) -> None:
             pass
 
     class FakeHarvester:
-        def __init__(self, session, client) -> None:
+        def __init__(self, session, client, tmdb_client=None) -> None:
             pass
 
         def harvest_discovery(self, *, job):  # noqa: ANN001
@@ -253,7 +253,7 @@ def test_worker_ejecuta_el_handler_enrich(monkeypatch) -> None:
             pass
 
     class FakeHarvester:
-        def __init__(self, session, client) -> None:
+        def __init__(self, session, client, tmdb_client=None) -> None:
             pass
 
         def harvest_enrichment(self, *, job):  # noqa: ANN001
@@ -329,7 +329,7 @@ def test_worker_indexa_el_lote_al_terminar(monkeypatch) -> None:
             pass
 
     class FakeHarvester:
-        def __init__(self, session, client) -> None:
+        def __init__(self, session, client, tmdb_client=None) -> None:
             pass
 
         def harvest_enrichment(self, *, job):  # noqa: ANN001
@@ -376,7 +376,7 @@ def test_titn_pendientes_de_indexar_se_reintentan(monkeypatch) -> None:
             pass
 
     class FakeHarvester:
-        def __init__(self, session, client) -> None:
+        def __init__(self, session, client, tmdb_client=None) -> None:
             pass
 
         def harvest_enrichment(self, *, job):  # noqa: ANN001
@@ -441,7 +441,7 @@ def test_worker_usa_la_url_de_flaresolverr_persistida(monkeypatch) -> None:
             pass
 
     class FakeHarvester:
-        def __init__(self, session, client) -> None:
+        def __init__(self, session, client, tmdb_client=None) -> None:
             pass
 
         def harvest_discovery(self, *, job):  # noqa: ANN001
@@ -533,7 +533,7 @@ def test_descubrimiento_con_nuevos_encola_enriquecimiento(monkeypatch) -> None:
             pass
 
     class FakeHarvester:
-        def __init__(self, session, client) -> None:
+        def __init__(self, session, client, tmdb_client=None) -> None:
             self.session = session
 
         def harvest_discovery(self, *, job):  # noqa: ANN001
@@ -578,7 +578,7 @@ def test_indexa_los_titn_procesados_si_el_lote_falla(monkeypatch) -> None:
     class FakeHarvester:
         processed_titns = ["1", "2"]
 
-        def __init__(self, session, client) -> None:
+        def __init__(self, session, client, tmdb_client=None) -> None:
             pass
 
         def harvest_enrichment(self, *, job):  # noqa: ANN001

@@ -15,7 +15,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from mediateca.catalog.parser import parse_file, parse_search_results
-from mediateca.catalog.repository import mark_absent_since, upsert_edicion, upsert_stub
+from mediateca.catalog.repository import (
+    apply_tmdb_enrichment,
+    mark_absent_since,
+    upsert_edicion,
+    upsert_stub,
+)
 from mediateca.core.db import Base
 
 
@@ -165,3 +170,42 @@ def test_mark_absent_since_marca_sin_borrar(search_results_fixture) -> None:
 
 
 
+
+
+def test_apply_tmdb_enrichment_es_idempotente_y_conserva_pais(dvd_fixture) -> None:
+    session = _session()
+    parsed = parse_file(str(dvd_fixture))
+    edicion = upsert_edicion(session, parsed)
+    session.commit()
+    pais_opac = edicion.pais
+
+    primero = datetime(2025, 1, 1, tzinfo=UTC)
+    apply_tmdb_enrichment(
+        session,
+        edicion,
+        paises_origen=["ES", "FR"],
+        tmdb_id=1,
+        enriched_at=primero,
+    )
+    session.commit()
+
+    assert edicion.paises_origen == ["ES", "FR"]
+    assert edicion.tmdb_id == 1
+    assert edicion.tmdb_enriched_at == primero
+    assert edicion.pais == pais_opac
+
+    segundo = datetime(2025, 2, 1, tzinfo=UTC)
+    apply_tmdb_enrichment(
+        session,
+        edicion,
+        paises_origen=["US"],
+        tmdb_id=2,
+        enriched_at=segundo,
+    )
+    session.commit()
+
+    assert edicion.paises_origen == ["US"]
+    assert edicion.tmdb_id == 2
+    assert edicion.tmdb_enriched_at == segundo
+    assert edicion.pais == pais_opac
+    assert session.scalar(select(func.count(Edicion.id))) == 1

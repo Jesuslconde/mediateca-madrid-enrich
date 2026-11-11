@@ -10,7 +10,8 @@ from typer.testing import CliRunner
 
 import mediateca.cli as cli_module
 from mediateca.catalog.harvester import Harvester, SearchPage
-from mediateca.catalog.jobs import create_stub
+from mediateca.catalog.jobs import create_stub, mark_enriched
+from mediateca.catalog.tmdb import TmdbMovieDetail, TmdbSearchResult
 from mediateca.core.db import Base
 
 
@@ -158,3 +159,158 @@ def test_cli_discover_usa_la_url_de_flaresolverr(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert capturado["flaresolverr_url"] == "http://db:8191"
+
+
+class _FakeTmdbClient:
+    def __init__(self, *, match: bool = True) -> None:
+        self.match = match
+        self.calls: list[tuple[str, int | None]] = []
+
+    def search_movie(self, query: str, *, year: int | None = None):
+        self.calls.append((query, year))
+        if not self.match:
+            return []
+        return [
+            TmdbSearchResult(
+                id=abs(hash(query)) % 100000,
+                title=query,
+                original_title=query,
+                release_date=f"{year or 2020}-01-01",
+                popularity=1.0,
+            )
+        ]
+
+    def get_movie(self, movie_id: int):
+        return TmdbMovieDetail(
+            id=movie_id,
+            title="Pelicula",
+            original_title="Pelicula",
+            release_date="2020-01-01",
+            production_countries=["ES"],
+        )
+
+    def close(self) -> None:
+        pass
+
+
+def _enriched_edition(session, titn: str, titulo: str, anio: int):
+    edicion = create_stub(session, titn)
+    edicion.titulo = titulo
+    edicion.anio = anio
+    mark_enriched(session, edicion)
+    return edicion
+
+
+def test_cli_tmdb_enrich_procesa_por_lotes_y_reanuda(
+    monkeypatch, tmp_path
+) -> None:
+    session = _session()
+    _enriched_edition(session, "1", "Pelicula A", 2020)
+    _enriched_edition(session, "2", "Pelicula B", 2021)
+    session.commit()
+
+    class FakeOpacClient:
+        delay = 0.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    @contextmanager
+    def fake_session_scope():
+        yield session
+        session.commit()
+
+    tmdb = _FakeTmdbClient()
+    monkeypatch.setattr(cli_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(cli_module, "session_scope", fake_session_scope)
+    monkeypatch.setattr(cli_module, "build_tmdb_client", lambda *args, **kwargs: tmdb)
+
+    first = CliRunner().invoke(
+        cli_module.app,
+        ["tmdb-enrich", "--limit", "1", "--delay", "0", "--no-index"],
+    )
+    assert first.exit_code == 0, first.output
+    ediciones = {
+        edicion.titn: edicion for edicion in session.scalars(select(Edicion))
+    }
+    assert ediciones["1"].tmdb_enriched_at is not None
+    assert ediciones["2"].tmdb_enriched_at is None
+
+    second = CliRunner().invoke(
+        cli_module.app,
+        ["tmdb-enrich", "--limit", "10", "--delay", "0", "--no-index"],
+    )
+    assert second.exit_code == 0, second.output
+    session.expire_all()
+    ediciones = {
+        edicion.titn: edicion for edicion in session.scalars(select(Edicion))
+    }
+    assert ediciones["1"].tmdb_enriched_at is not None
+    assert ediciones["2"].tmdb_enriched_at is not None
+
+
+def test_cli_tmdb_enrich_sin_token_falla_sin_modificar(monkeypatch, tmp_path) -> None:
+    session = _session()
+    edicion = _enriched_edition(session, "1", "Pelicula A", 2020)
+    session.commit()
+
+    @contextmanager
+    def fake_session_scope():
+        yield session
+        session.commit()
+
+    monkeypatch.setattr(cli_module, "session_scope", fake_session_scope)
+    monkeypatch.setattr(cli_module, "build_tmdb_client", lambda *args, **kwargs: None)
+
+    result = CliRunner().invoke(cli_module.app, ["tmdb-enrich", "--limit", "10"])
+
+    assert result.exit_code == 1
+    assert "No hay token de TMDB" in result.output
+    session.refresh(edicion)
+    assert edicion.tmdb_enriched_at is None
+
+
+def test_cli_tmdb_enrich_indexa_los_titn_procesados(monkeypatch, tmp_path) -> None:
+    session = _session()
+    _enriched_edition(session, "1", "Pelicula A", 2020)
+    session.commit()
+
+    class FakeOpacClient:
+        delay = 0.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    class FakeIndexer:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def index_titns(self, session, titns):  # noqa: ANN001
+            self.calls.append(list(titns))
+            return len(titns)
+
+    @contextmanager
+    def fake_session_scope():
+        yield session
+        session.commit()
+
+    indexer = FakeIndexer()
+    tmdb = _FakeTmdbClient()
+    monkeypatch.setattr(cli_module, "OpacClient", FakeOpacClient)
+    monkeypatch.setattr(cli_module, "session_scope", fake_session_scope)
+    monkeypatch.setattr(cli_module, "build_tmdb_client", lambda *args, **kwargs: tmdb)
+    monkeypatch.setattr(cli_module, "MeiliIndexer", lambda: indexer)
+
+    result = CliRunner().invoke(
+        cli_module.app,
+        ["tmdb-enrich", "--limit", "10", "--delay", "0"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert indexer.calls == [["1"]]

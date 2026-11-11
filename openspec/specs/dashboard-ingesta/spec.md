@@ -24,7 +24,7 @@ El sistema MUST exponer una página web que muestre el estado de los trabajos de
 
 #### Scenario: Escritura de configuración explícita
 
-- **WHEN** el operador guarda la configuración de FlareSolverr o de la programación
+- **WHEN** el operador guarda la configuración de FlareSolverr, de TMDB o de la programación
 - **THEN** solo se escribe esa configuración
 - **AND** los trabajos, las ediciones y el índice permanecen intactos
 
@@ -70,6 +70,71 @@ El dashboard MUST mostrar y permitir guardar la URL de FlareSolverr. La URL guar
 - **WHEN** la base de datos no permite guardar la configuración
 - **THEN** el dashboard muestra un error comprensible
 - **AND** no deja la configuración a medio actualizar
+
+### Requirement: Configuración del token de TMDB desde el dashboard
+
+El dashboard MUST mostrar y permitir guardar o borrar el token de API de TMDB. El token guardado SHALL persistirse en `app_config` y prevalecer sobre `MEDIATECA_TMDB_API_TOKEN`; si no hay valor guardado, se usa la variable de entorno. El sistema MUST validar el token y SHALL rechazar valores inválidos sin cambiar la configuración vigente.
+
+#### Scenario: Mostrar configuración vigente
+
+- **WHEN** el operador abre el dashboard
+- **THEN** ve si hay token de TMDB configurado y su origen (`dashboard`, `entorno` o `ninguno`)
+- **AND** ve solo una versión enmascarada del token, nunca el valor completo
+- **AND** ve si el enriquecimiento TMDB está activo o inactivo
+
+#### Scenario: Guardar un token válido
+
+- **WHEN** el operador envía un token válido
+- **THEN** el token se persiste en `app_config`
+- **AND** los trabajos de enriquecimiento y backfill lanzados después lo usan
+- **AND** el dashboard muestra el nuevo origen y la versión enmascarada
+
+#### Scenario: Campo vacío conserva el token
+
+- **WHEN** el operador guarda el formulario con el campo vacío y sin marcar la opción de borrado
+- **THEN** se conserva el token guardado
+- **AND** no se usa la variable de entorno mientras exista ese token
+
+#### Scenario: Borrar el token
+
+- **WHEN** el operador marca la opción de borrado y guarda
+- **THEN** se elimina el token persistido
+- **AND** se usa la variable de entorno si existe
+- **AND** si tampoco existe, el enriquecimiento TMDB queda desactivado
+
+#### Scenario: Token inválido
+
+- **WHEN** el operador envía un valor con espacios, caracteres de control o una longitud fuera del rango admitido
+- **THEN** el dashboard muestra un error comprensible
+- **AND** no se modifica la configuración vigente
+
+#### Scenario: Error al persistir
+
+- **WHEN** la base de datos no permite guardar la configuración
+- **THEN** el dashboard muestra un error comprensible
+- **AND** no deja la configuración a medio actualizar
+
+### Requirement: Protección del token de TMDB
+
+El sistema MUST NOT mostrar el token completo en la interfaz ni registrarlo en logs o mensajes de error. Las acciones de escritura del token SHALL requerir el token de administración cuando `MEDIATECA_DASHBOARD_ADMIN_TOKEN` esté configurado.
+
+#### Scenario: Token no expuesto en la vista
+
+- **WHEN** el dashboard muestra la configuración de TMDB
+- **THEN** el HTML no contiene el token completo
+- **AND** solo muestra un identificador enmascarado
+
+#### Scenario: Token no registrado en logs
+
+- **WHEN** se guarda, valida o usa el token
+- **THEN** los logs no incluyen el valor del token
+- **AND** los errores tampoco lo incluyen
+
+#### Scenario: Escritura sin administración
+
+- **WHEN** un operador sin token de administración intenta guardar o borrar el token de TMDB
+- **THEN** la escritura se rechaza con un mensaje comprensible
+- **AND** no se modifica la base de datos
 
 ### Requirement: Resumen de trabajos por estado y tipo
 
@@ -137,13 +202,19 @@ El sistema MUST mostrar el último heartbeat del worker y SHALL marcar el estado
 
 ### Requirement: Actualización automática
 
-El sistema SHALL refrescar la página automáticamente con un intervalo configurable, sin requerir que el operador la recargue manualmente.
+El sistema SHALL refrescar automáticamente las páginas de Inicio y Tareas con un intervalo configurable, sin requerir que el operador las recargue manualmente. La página de Configuración SHALL NOT refrescarse automáticamente para no perder cambios en los formularios.
 
 #### Scenario: Refresco periódico
 
 - **WHEN** transcurre el intervalo de refresco configurado
 - **THEN** la vista actualiza los datos mostrados
 - **AND** el intervalo puede cambiarse mediante configuración de entorno
+
+#### Scenario: Configuración sin refresco
+
+- **WHEN** el operador está editando un formulario en Configuración
+- **THEN** la página no se recarga automáticamente
+- **AND** los valores introducidos no se pierden por el refresco
 
 ### Requirement: Tolerancia a fallos de la base de datos
 
@@ -214,3 +285,91 @@ El sistema MUST exigir un token para las acciones de escritura del dashboard cua
 - **WHEN** el operador introduce el token correcto
 - **THEN** se guarda una cookie de administración `HttpOnly` y `SameSite=Strict`
 - **AND** puede usar los formularios de escritura durante la sesión
+
+### Requirement: Menú lateral de navegación
+
+El dashboard MUST mostrar un menú lateral persistente en las páginas de Inicio, Tareas y Configuración, con enlaces a `/`, `/tareas` y `/configuracion`, la sección activa resaltada y acceso al estado de administración, login y logout.
+
+#### Scenario: Navegación entre páginas
+
+- **WHEN** el operador pulsa una opción del menú lateral
+- **THEN** se abre la página correspondiente sin recargar la aplicación completa
+- **AND** el menú sigue visible en la nueva página
+
+#### Scenario: Sección activa
+
+- **WHEN** el operador está en una de las tres páginas
+- **THEN** el menú resalta la opción de esa página
+- **AND** las demás opciones siguen disponibles
+
+#### Scenario: Administración desde el menú
+
+- **WHEN** el operador necesita iniciar o cerrar sesión de administración
+- **THEN** dispone de esas acciones en el menú lateral desde cualquier página
+- **AND** el estado de la sesión se muestra en el menú
+
+### Requirement: Página de Inicio centrada en estados
+
+La página de Inicio MUST mostrar únicamente la salud del worker, el resumen de trabajos por estado y tipo, la cobertura del catálogo y las métricas de ingesta. SHALL NOT incluir la tabla de trabajos recientes, las acciones de encolado ni los formularios de configuración.
+
+#### Scenario: Inicio sin administración
+
+- **WHEN** el operador abre `/`
+- **THEN** ve los estados, la cobertura y las métricas
+- **AND** no ve la tabla de trabajos recientes, los botones de encolado ni los formularios de configuración
+
+#### Scenario: Acceso a las demás páginas
+
+- **WHEN** el operador necesita ver trabajos o cambiar configuración
+- **THEN** el menú lateral le ofrece Tareas y Configuración
+- **AND** Inicio no duplica esas secciones
+
+### Requirement: Página de Tareas
+
+La página de Tareas MUST mostrar los trabajos recientes y las acciones de descubrimiento, enriquecimiento e indexación. SHALL conservar las reglas de encolado, la desactivación de acciones con un trabajo activo y la protección de escritura.
+
+#### Scenario: Visualización de trabajos
+
+- **WHEN** el operador abre `/tareas`
+- **THEN** ve la tabla de trabajos recientes con los mismos campos y orden que antes
+- **AND** ve el estado activo de cada tipo de trabajo
+
+#### Scenario: Acciones bajo demanda
+
+- **WHEN** el operador pulsa una acción de descubrimiento, enriquecimiento o indexación
+- **THEN** se encola el trabajo con las mismas reglas que en la vista anterior
+- **AND** las acciones con un trabajo activo del mismo tipo siguen deshabilitadas
+
+#### Scenario: Redirección con mensaje
+
+- **WHEN** una acción de tareas termina con éxito o error
+- **THEN** el operador vuelve a `/tareas`
+- **AND** ve el mensaje correspondiente en esa página
+
+#### Scenario: Escritura sin administración
+
+- **WHEN** el operador no tiene sesión de administración y hay token configurado
+- **THEN** las acciones de encolado aparecen deshabilitadas o se rechazan
+- **AND** no se crea ningún trabajo
+
+### Requirement: Página de Configuración
+
+La página de Configuración MUST agrupar la programación, la configuración de FlareSolverr y la configuración del token de TMDB. Cada sección SHALL conservar su contrato vigente de validación, precedencia, máscara y protección de escritura.
+
+#### Scenario: Secciones de configuración
+
+- **WHEN** el operador abre `/configuracion`
+- **THEN** ve la programación, la URL efectiva de FlareSolverr y el estado del token de TMDB
+- **AND** ve los formularios correspondientes si tiene acceso de administración
+
+#### Scenario: Guardado y mensajes
+
+- **WHEN** el operador guarda una sección con éxito o error
+- **THEN** vuelve a `/configuracion`
+- **AND** ve el mensaje correspondiente en esa página
+
+#### Scenario: Contratos conservados
+
+- **WHEN** el operador guarda o borra la configuración de FlareSolverr, TMDB o la programación
+- **THEN** se aplican las mismas reglas de validación, precedencia y protección que antes del cambio
+- **AND** los trabajos, las ediciones y el índice permanecen intactos

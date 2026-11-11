@@ -13,9 +13,11 @@ from mediateca.catalog.jobs import IngestCoverage, coverage
 from mediateca.core.config import settings
 from mediateca.core.config_store import (
     FLARESOLVERR_URL_KEY,
+    TMDB_API_TOKEN_KEY,
     ConfigValidationError,
     get_config_value,
     normalize_flaresolverr_url,
+    normalize_tmdb_api_token,
 )
 
 
@@ -32,6 +34,16 @@ class FlareSolverrConfig:
     env_url: str | None
     effective_url: str | None
     source: str
+    active: bool
+
+
+@dataclass(slots=True)
+class TmdbConfig:
+    saved: bool
+    env: bool
+    effective: bool
+    source: str
+    masked_token: str | None
     active: bool
 
 
@@ -67,6 +79,53 @@ def flaresolverr_config(session: Session) -> FlareSolverrConfig:
         env_url=None,
         effective_url=None,
         source="ninguno",
+        active=False,
+    )
+
+
+def _normalize_tmdb(value: str | None) -> str | None:
+    try:
+        return normalize_tmdb_api_token(value)
+    except ConfigValidationError:
+        return None
+
+
+def _mask_token(value: str | None) -> str | None:
+    if not value:
+        return None
+    if len(value) <= 4:
+        return "****"
+    return "****" + value[-4:]
+
+
+def tmdb_config(session: Session) -> TmdbConfig:
+    saved = _normalize_tmdb(get_config_value(session, TMDB_API_TOKEN_KEY))
+    env = _normalize_tmdb(settings.tmdb_api_token)
+
+    if saved:
+        return TmdbConfig(
+            saved=True,
+            env=bool(env),
+            effective=True,
+            source="dashboard",
+            masked_token=_mask_token(saved),
+            active=True,
+        )
+    if env:
+        return TmdbConfig(
+            saved=False,
+            env=True,
+            effective=True,
+            source="entorno",
+            masked_token=_mask_token(env),
+            active=True,
+        )
+    return TmdbConfig(
+        saved=False,
+        env=False,
+        effective=False,
+        source="ninguno",
+        masked_token=None,
         active=False,
     )
 

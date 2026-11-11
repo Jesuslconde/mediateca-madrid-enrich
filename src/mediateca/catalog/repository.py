@@ -294,6 +294,21 @@ def upsert_stub(session: Session, parsed: ParsedEdicion) -> Edicion:
     return edicion
 
 
+def apply_tmdb_enrichment(
+    session: Session,
+    edicion: Edicion,
+    *,
+    paises_origen: list[str],
+    tmdb_id: int,
+    enriched_at: datetime | None = None,
+) -> None:
+    """Actualiza los campos TMDB sin tocar el pais del OPAC."""
+    edicion.paises_origen = list(paises_origen)
+    edicion.tmdb_id = tmdb_id
+    edicion.tmdb_enriched_at = enriched_at or datetime.now(UTC)
+    session.flush()
+
+
 def mark_absent_since(
     session: Session,
     seen_titns: Iterable[str],

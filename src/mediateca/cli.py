@@ -15,6 +15,7 @@ from mediateca.catalog.harvester import Harvester, OpacClient
 from mediateca.catalog.indexer import MeiliIndexer
 from mediateca.catalog.jobs import (
     DEFAULT_HANDLERS,
+    build_tmdb_client,
     coverage,
     ingest_metrics,
     recent_jobs,
@@ -111,16 +112,69 @@ def enrich_command(
 ) -> None:
     """Enriquece por lotes las ediciones descubiertas y pendientes."""
     configure_logging()
-    with session_scope() as session, OpacClient(
-        delay=delay, flaresolverr_url=effective_flaresolverr_url(session)
-    ) as client:
-        harvester = Harvester(session, client=client)
-        stats = harvester.harvest_enrichment(limit=limit, delay=delay)
+    with session_scope() as session:
+        tmdb_client = build_tmdb_client(session)
+        try:
+            with OpacClient(
+                delay=delay, flaresolverr_url=effective_flaresolverr_url(session)
+            ) as client:
+                harvester = Harvester(
+                    session,
+                    client=client,
+                    tmdb_client=tmdb_client,
+                )
+                stats = harvester.harvest_enrichment(limit=limit, delay=delay)
+        finally:
+            if tmdb_client is not None:
+                tmdb_client.close()
     console.print(f"[green]Enriquecimiento terminado:[/green] {stats}")
     if index:
         with session_scope() as session:
             total = MeiliIndexer().index_titns(
                 session, stats.get("processed_titns", [])
+            )
+        console.print(f"[green]{total} ediciones indexadas[/green]")
+
+
+@app.command("tmdb-enrich")
+def tmdb_enrich_command(
+    limit: int = typer.Option(
+        5000, "--limit", min=1, help="Ediciones maximas por lote"
+    ),
+    delay: float = typer.Option(
+        0.25, "--delay", min=0.0, help="Segundos entre peticiones a TMDB"
+    ),
+    no_index: bool = typer.Option(
+        False, "--no-index", help="No indexar los TITN procesados"
+    ),
+) -> None:
+    """Completa los paises de origen de las ediciones ya enriquecidas."""
+    configure_logging()
+    with session_scope() as session:
+        tmdb_client = build_tmdb_client(session, delay=delay)
+        if tmdb_client is None:
+            console.print(
+                "[red]No hay token de TMDB configurado; "
+                "guardalo en el dashboard o define MEDIATECA_TMDB_API_TOKEN[/red]"
+            )
+            raise typer.Exit(code=1)
+        try:
+            with OpacClient() as client:
+                harvester = Harvester(
+                    session,
+                    client=client,
+                    tmdb_client=tmdb_client,
+                )
+                stats = harvester.harvest_tmdb_enrichment(
+                    limit=limit, delay=delay
+                )
+        finally:
+            tmdb_client.close()
+    console.print(f"[green]Backfill TMDB terminado:[/green] {stats}")
+    if not no_index and stats["processed_titns"]:
+        with session_scope() as session:
+            total = MeiliIndexer().index_titns(
+                session, stats["processed_titns"]
             )
         console.print(f"[green]{total} ediciones indexadas[/green]")
 

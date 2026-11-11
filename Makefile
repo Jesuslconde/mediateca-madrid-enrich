@@ -43,6 +43,7 @@ migrate: ## Aplicar migraciones idempotentes
 	docker compose exec -T db psql -U $${POSTGRES_USER:-mediateca} -d $${POSTGRES_DB:-mediateca} < scripts/migrate_disponibilidad.sql
 	docker compose exec -T db psql -U $${POSTGRES_USER:-mediateca} -d $${POSTGRES_DB:-mediateca} < scripts/migrate_ingesta.sql
 	docker compose exec -T db psql -U $${POSTGRES_USER:-mediateca} -d $${POSTGRES_DB:-mediateca} < scripts/migrate_flaresolverr.sql
+	docker compose exec -T db psql -U $${POSTGRES_USER:-mediateca} -d $${POSTGRES_DB:-mediateca} < scripts/migrate_tmdb.sql
 
 harvest: ## Recolectar del OPAC: make harvest q=cine pages=2 limit=20
 	docker compose run --rm worker mediateca harvest --query "$(q)" --max-pages $(pages) $(if $(limit),--limit $(limit),)

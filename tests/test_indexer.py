@@ -4,7 +4,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from mediateca.catalog.indexer import FILTERABLE_ATTRIBUTES, MeiliIndexer, build_document
+from mediateca.catalog.indexer import (
+    FACET_FIELDS,
+    FILTERABLE_ATTRIBUTES,
+    MeiliIndexer,
+    build_document,
+    build_filters,
+)
 from mediateca.catalog.jobs import create_stub
 from mediateca.catalog.parser import parse_file
 from mediateca.catalog.repository import upsert_edicion
@@ -43,6 +49,9 @@ class _FakeIndex:
         self.batches.append([document["id"] for document in documents])
         for document in documents:
             self.documents[document["id"]] = document
+
+    def delete_all_documents(self):
+        self.documents.clear()
 
 
 def _fake_indexer() -> tuple[MeiliIndexer, _FakeIndex]:
@@ -108,3 +117,48 @@ def test_index_titns_envia_lotes_de_200() -> None:
 def test_detail_complete_es_un_atributo_filtrable() -> None:
     assert "detail_complete" in FILTERABLE_ATTRIBUTES
     assert "is_stub" in FILTERABLE_ATTRIBUTES
+
+
+def test_build_document_incluye_paises_origen(dvd_fixture) -> None:
+    session = _session()
+    edicion = upsert_edicion(session, parse_file(str(dvd_fixture)))
+    edicion.paises_origen = ["ES", "FR"]
+    session.commit()
+
+    document = build_document(edicion)
+
+    assert document["paises_origen"] == ["ES", "FR"]
+
+
+def test_build_document_incluye_lista_vacia_para_sin_tmdb() -> None:
+    session = _session()
+    stub = create_stub(session, "sin-tmdb")
+    session.commit()
+
+    assert build_document(stub)["paises_origen"] == []
+
+
+def test_faceta_y_filtro_de_paises_origen() -> None:
+    assert "paises_origen" in FACET_FIELDS
+    assert "paises_origen" in FILTERABLE_ATTRIBUTES
+
+    filters = build_filters(paises_origen=["ES", "FR"])
+    assert filters is not None
+    assert 'paises_origen = "ES"' in filters
+    assert 'paises_origen = "FR"' in filters
+    assert " OR " in filters
+
+
+def test_index_reset_reconstruye_paises_origen(dvd_fixture) -> None:
+    session = _session()
+    edicion = upsert_edicion(session, parse_file(str(dvd_fixture)))
+    edicion.paises_origen = ["ES"]
+    session.commit()
+    indexer, index = _fake_indexer()
+    index.documents["antiguo"] = {"id": "antiguo"}
+
+    total = indexer.index_editions(session, reset=True)
+
+    assert total == 1
+    assert "antiguo" not in index.documents
+    assert index.documents[edicion.titn]["paises_origen"] == ["ES"]

@@ -9,7 +9,8 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
-from mediateca_shared.models import HarvestJob, HarvestRun
+from mediateca_shared.models import Edicion, HarvestJob, HarvestRun
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mediateca.catalog.flaresolverr import (
@@ -20,11 +21,13 @@ from mediateca.catalog.flaresolverr import (
 from mediateca.catalog.jobs import create_job, finish_job, update_cursor
 from mediateca.catalog.parser import parse_detail, parse_search_results
 from mediateca.catalog.repository import (
+    apply_tmdb_enrichment,
     mark_absent_since,
     select_pending_titns,
     upsert_edicion,
     upsert_stub,
 )
+from mediateca.catalog.tmdb import TmdbClient, TmdbError, find_movie, resolve_countries
 from mediateca.core.config import settings
 from mediateca.core.logging import get_logger
 
@@ -457,15 +460,70 @@ class Harvester:
         session: Session,
         *,
         client: OpacClient | None = None,
+        tmdb_client: TmdbClient | None = None,
     ) -> None:
         self.session = session
         self.client = client or OpacClient()
+        self.tmdb_client = tmdb_client
         self.processed_titns: list[str] = []
+        self.tmdb_matched = 0
+        self.tmdb_unmatched = 0
+        self.tmdb_errors = 0
+        self.tmdb_skipped = 0
 
     def _save(self, parsed):
         edicion = upsert_edicion(self.session, parsed)
         self.session.commit()
         return edicion
+
+    def _reset_tmdb_counters(self) -> None:
+        self.tmdb_matched = 0
+        self.tmdb_unmatched = 0
+        self.tmdb_errors = 0
+        self.tmdb_skipped = 0
+
+    def _tmdb_metrics(self) -> dict[str, int]:
+        return {
+            "tmdb_matched": self.tmdb_matched,
+            "tmdb_unmatched": self.tmdb_unmatched,
+            "tmdb_errors": self.tmdb_errors,
+            "tmdb_skipped": self.tmdb_skipped,
+        }
+
+    def _enrich_tmdb(self, edicion) -> str:
+        if self.tmdb_client is None:
+            self.tmdb_skipped += 1
+            return "skipped"
+        try:
+            found = find_movie(
+                self.tmdb_client,
+                titulo_uniforme=edicion.titulo_uniforme,
+                titulo=edicion.titulo,
+                anio=edicion.anio,
+            )
+            if found is None:
+                self.tmdb_unmatched += 1
+                return "unmatched"
+            match, detail = found
+            apply_tmdb_enrichment(
+                self.session,
+                edicion,
+                paises_origen=resolve_countries(detail),
+                tmdb_id=match.id,
+            )
+            self.session.commit()
+            self.tmdb_matched += 1
+            return "matched"
+        except TmdbError as exc:
+            self.session.rollback()
+            self.tmdb_errors += 1
+            logger.warning("No se pudo enriquecer %s con TMDB: %s", edicion.titn, exc)
+            return "error"
+        except Exception:
+            self.session.rollback()
+            self.tmdb_errors += 1
+            logger.exception("Error inesperado en el enriquecimiento TMDB de %s", edicion.titn)
+            return "error"
 
     def _opac_metrics(self) -> dict[str, int]:
         return {
@@ -541,7 +599,8 @@ class Harvester:
             try:
                 html, final_url = self.client.fetch_by_titn(titn)
                 parsed = parse_detail(html, final_url)
-                self._save(parsed)
+                edicion = self._save(parsed)
+                self._enrich_tmdb(edicion)
                 return
             except CaptchaRequired:
                 self.session.rollback()
@@ -594,6 +653,7 @@ class Harvester:
         failed: list[str] = []
         processed_titns: list[str] = []
         self.processed_titns = processed_titns
+        self._reset_tmdb_counters()
         last_titn = cursor_titn
         pending: list[str] = []
 
@@ -656,6 +716,7 @@ class Harvester:
                         **({"since": since.isoformat()} if since else {}),
                         **({"reason": reason} if reason else {}),
                         **self._opac_metrics(),
+                        **self._tmdb_metrics(),
                     },
                 )
                 self.session.commit()
@@ -671,6 +732,7 @@ class Harvester:
                 **({"since": since.isoformat()} if since else {}),
                 **({"reason": reason} if reason else {}),
                 **self._opac_metrics(),
+                **self._tmdb_metrics(),
             }
             run.status = "finished"
             run.stats = stats
@@ -686,6 +748,49 @@ class Harvester:
         finally:
             run.finished_at = datetime.now(UTC)
             self.session.commit()
+
+    def harvest_tmdb_enrichment(
+        self,
+        *,
+        limit: int = 5000,
+        delay: float | None = None,
+    ) -> dict[str, int | list[str]]:
+        if self.tmdb_client is None:
+            raise TmdbError("No hay token de TMDB configurado")
+        delay = self.client.delay if delay is None else delay
+        self._reset_tmdb_counters()
+        self.processed_titns = []
+
+        stmt = (
+            select(Edicion)
+            .where(
+                Edicion.detail_fetched_at.is_not(None),
+                Edicion.tmdb_enriched_at.is_(None),
+            )
+            .order_by(Edicion.titn)
+            .limit(limit)
+        )
+        pending = list(self.session.scalars(stmt))
+        processed_titns: list[str] = []
+        failed: list[str] = []
+        for edicion in pending:
+            status = self._enrich_tmdb(edicion)
+            if status == "error":
+                failed.append(edicion.titn)
+            else:
+                processed_titns.append(edicion.titn)
+            self.processed_titns = processed_titns
+            time.sleep(delay)
+
+        return {
+            "selected": len(pending),
+            "processed": len(processed_titns),
+            "matched": self.tmdb_matched,
+            "unmatched": self.tmdb_unmatched,
+            "errors": self.tmdb_errors,
+            "failed": failed,
+            "processed_titns": processed_titns,
+        }
 
     def harvest_discovery(
         self,

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     crawl_max_retries: int = 3
     flaresolverr_url: str | None = None
     flaresolverr_max_timeout_ms: int = 60000
+    tmdb_api_token: str | None = None
+    tmdb_language: str = "es-ES"
+    tmdb_delay: float = 0.25
+    tmdb_timeout: float = 10.0
+    tmdb_max_retries: int = 3
     user_agent: str = (
         "MediatecaMadrid/0.1 (portal alternativo de consulta; "
         "contacto: mediateca@example.org)"

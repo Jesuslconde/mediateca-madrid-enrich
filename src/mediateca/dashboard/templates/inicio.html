@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h2>Salud del worker</h2>
+    <p>
+      Estado:
+      <span class="{{ 'ok' if worker.status == 'ok' else 'degraded' }}">{{ worker.status }}</span>
+      {% if worker.last_heartbeat %}
+        | Ultimo heartbeat: {{ worker.last_heartbeat.strftime('%Y-%m-%d %H:%M:%S') }}
+        | Fuente: {{ worker.source }}
+      {% else %}
+        | Sin heartbeat registrado
+      {% endif %}
+    </p>
+  </section>
+
+  <section>
+    <h2>Trabajos por estado</h2>
+    <div class="grid">
+      {% for status, total in status_counts.items() %}
+        <div class="metric"><span class="muted">{{ status }}</span><strong>{{ total }}</strong></div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Trabajos por tipo</h2>
+    <div class="grid">
+      {% for job_type, total in type_counts.items() %}
+        <div class="metric"><span class="muted">{{ job_type }}</span><strong>{{ total }}</strong></div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Cobertura del catalogo</h2>
+    <div class="grid">
+      <div class="metric"><span class="muted">Ediciones</span><strong>{{ coverage.ediciones }}</strong></div>
+      <div class="metric"><span class="muted">Descubiertas</span><strong>{{ coverage.descubiertas }}</strong></div>
+      <div class="metric"><span class="muted">Enriquecidas</span><strong>{{ coverage.enriquecidas }}</strong></div>
+      <div class="metric"><span class="muted">Pendientes</span><strong>{{ coverage.pendientes }}</strong></div>
+      <div class="metric"><span class="muted">Fallidas</span><strong>{{ coverage.fallidas }}</strong></div>
+      <div class="metric"><span class="muted">Enriquecimiento</span><strong>{{ enrichment_percent }}%</strong></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Metricas de ingesta</h2>
+    <div class="grid">
+      <div class="metric"><span class="muted">Procesadas</span><strong>{{ metrics.processed }}</strong></div>
+      <div class="metric"><span class="muted">Errores</span><strong>{{ metrics.errors }}</strong></div>
+      <div class="metric"><span class="muted">Captchas</span><strong>{{ metrics.captchas }}</strong></div>
+      <div class="metric"><span class="muted">Captchas resueltos</span><strong>{{ metrics.captchas_solved }}</strong></div>
+      <div class="metric"><span class="muted">Captchas fallidos</span><strong>{{ metrics.captchas_failed }}</strong></div>
+      <div class="metric"><span class="muted">Renovaciones de sesion</span><strong>{{ metrics.session_renewals }}</strong></div>
+      <div class="metric">
+        <span class="muted">Tiempo medio por ficha</span>
+        <strong>{% if metrics.average_ms is not none %}{{ metrics.average_ms }} ms{% else %}—{% endif %}</strong>
+      </div>
+    </div>
+  </section>
+{% endblock %}

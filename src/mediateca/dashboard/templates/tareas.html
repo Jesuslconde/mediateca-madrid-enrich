@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h2>Tareas bajo demanda</h2>
+    <div class="actions">
+      <form method="post" action="/jobs">
+        <input type="hidden" name="next" value="/tareas">
+        <input type="hidden" name="job_type" value="discover">
+        <input type="hidden" name="mode" value="incremental">
+        <button type="submit" {% if active_jobs['discover'] or not is_admin %}disabled{% endif %}>Buscar novedades</button>
+      </form>
+      <form method="post" action="/jobs" onsubmit="return confirm('El descubrimiento completo recorre todo el catalogo y puede tardar horas. ¿Continuar?');">
+        <input type="hidden" name="next" value="/tareas">
+        <input type="hidden" name="job_type" value="discover">
+        <input type="hidden" name="mode" value="full">
+        <button type="submit" {% if active_jobs['discover'] or not is_admin %}disabled{% endif %}>Descubrimiento completo</button>
+      </form>
+      <form method="post" action="/jobs">
+        <input type="hidden" name="next" value="/tareas">
+        <input type="hidden" name="job_type" value="enrich">
+        <label>Lote <input type="number" name="limit" value="5000" min="1" max="50000"></label>
+        <button type="submit" {% if active_jobs['enrich'] or not is_admin %}disabled{% endif %}>Enriquecer pendientes</button>
+      </form>
+      <form method="post" action="/jobs">
+        <input type="hidden" name="next" value="/tareas">
+        <input type="hidden" name="job_type" value="index">
+        <button type="submit" {% if active_jobs['index'] or not is_admin %}disabled{% endif %}>Reindexar</button>
+      </form>
+    </div>
+    <p class="muted">Los trabajos se ejecutan de uno en uno en el worker. No se encola un trabajo si ya hay otro del mismo tipo activo.</p>
+  </section>
+
+  <section>
+    <h2>Trabajos recientes</h2>
+    {% if jobs %}
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Tipo</th>
+            <th>Estado</th>
+            <th>Cursor</th>
+            <th>Intentos</th>
+            <th>Creado</th>
+            <th>Inicio</th>
+            <th>Fin</th>
+            <th>Heartbeat</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+            <tr>
+              <td>{{ job.id }}</td>
+              <td>{{ job.job_type }}</td>
+              <td>{{ job.status }}</td>
+              <td>{{ job.cursor_doc if job.cursor_doc is not none else '—' }}/{{ job.cursor_titn if job.cursor_titn is not none else '—' }}</td>
+              <td>{{ job.attempts or 0 }}/{{ job.max_attempts or 0 }}</td>
+              <td>{{ job.created_at.strftime('%Y-%m-%d %H:%M') if job.created_at else '—' }}</td>
+              <td>{{ job.started_at.strftime('%Y-%m-%d %H:%M') if job.started_at else '—' }}</td>
+              <td>{{ job.finished_at.strftime('%Y-%m-%d %H:%M') if job.finished_at else '—' }}</td>
+              <td>{{ job.heartbeat_at.strftime('%Y-%m-%d %H:%M') if job.heartbeat_at else '—' }}</td>
+              <td class="error">{{ job.error or '' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No hay trabajos registrados.</p>
+    {% endif %}
+  </section>
+{% endblock %}
